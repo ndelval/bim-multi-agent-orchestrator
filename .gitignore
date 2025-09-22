@@ -1,0 +1,66 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.env
+.env/
+.venv/
+venv/
+ENV/
+*.envrc
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+
+# VSCode
+.vscode/
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+
+# Test outputs
+htmlcov/
+.coverage
+.tox/
+
+# Poetry
+poetry.lock
+
+# Node
+node_modules/
+
+# Otros
+*.swp
+*.bak
+*.tmp
+
+# Docker
+*.pid
+*.pid.lock
+
+# Configuración
+*.toml
+
+# Archivos de entorno
+.env.local
+.env.*.local
+.env
+
+# Archivos de backup
+*~
+
+# Archivos de ejecución
+*.run
+
+# Archivos de compilación
+build/
+dist/
+*.egg-info/
+
+# Archivos de documentación
+*.md.bak
