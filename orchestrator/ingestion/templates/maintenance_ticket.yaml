@@ -1,0 +1,16 @@
+# Metadata template for maintenance tickets / field notes
+title: ""
+discipline: ""
+doc_type: maintenance_ticket
+version: 1.0
+effective_date: ""
+language: es
+source_url: ""
+retention_days: 120
+tags:
+  - mantenimiento
+  - ticket
+extra:
+  equipment_id: ""
+  priority: "media"
+  assignee: ""

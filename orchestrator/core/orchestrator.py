@@ -451,11 +451,19 @@ class Orchestrator:
             info["memory"] = self.memory_manager.get_provider_info()
         
         return info
-    
+
     def export_config(self, file_path: Union[str, Path]) -> None:
         """Export current configuration to file."""
         self.config.save_to_file(file_path)
         logger.info(f"Configuration exported to: {file_path}")
+
+    def create_graph_tool(self, *, user_id: Optional[str] = None, run_id: Optional[str] = None):
+        """Create a GraphRAG lookup tool if the memory manager supports it."""
+        if not self.memory_manager:
+            raise MemoryError("Memory manager not initialized; cannot create graph tool")
+        user = user_id or self.config.execution_config.user_id
+        run = run_id or self.config.execution_config.user_id
+        return self.memory_manager.create_graph_tool(default_user_id=user, default_run_id=run)
     
     def import_config(self, file_path: Union[str, Path]) -> None:
         """Import configuration from file and reinitialize."""

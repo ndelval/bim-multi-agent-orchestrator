@@ -1,0 +1,16 @@
+# Metadata template for research papers or technical reports
+title: ""
+discipline: ""
+doc_type: research
+version: ""
+effective_date: ""
+language: es
+source_url: ""
+retention_days: 365
+tags:
+  - investigacion
+  - paper
+extra:
+  authors: []
+  conference: ""
+  doi: ""

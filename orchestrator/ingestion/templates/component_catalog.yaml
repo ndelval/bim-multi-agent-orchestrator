@@ -1,0 +1,16 @@
+# Metadata template for component datasheets / vendor catalogs
+title: ""
+discipline: ""
+doc_type: component_catalog
+version: ""
+effective_date: ""
+language: es
+source_url: ""
+retention_days: 180
+tags:
+  - componentes
+  - catalogo
+extra:
+  vendor: ""
+  part_family: ""
+  api_endpoint: ""

@@ -1,0 +1,16 @@
+# Metadata template for compliance audits / inspection reports
+title: ""
+discipline: ""
+doc_type: compliance_report
+version: ""
+effective_date: ""
+language: es
+source_url: ""
+retention_days: 730
+tags:
+  - compliance
+  - auditoria
+extra:
+  status: "pendiente"
+  auditor: ""
+  finding_level: ""

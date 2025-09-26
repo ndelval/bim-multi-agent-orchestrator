@@ -530,3 +530,65 @@ export HYBRID_RERANK_MAX_WORKERS=2
 ```
 
 El reranker se ejecuta en un `ThreadPoolExecutor` con modelos y puntuaciones cacheadas para no bloquear el CLI. Si `sentence-transformers` (y `torch`) no están disponibles, el sistema continúa sin rerank cruzado.
+
+### GraphRAG Tooling para Agentes
+
+El CLI expone un tool reusable `graph_rag_lookup` respaldado por el `MemoryManager` híbrido:
+
+- Combina filtros de Neo4j (tags, documentos, secciones) con búsqueda vectorial y ranking BM25.
+- El router agrega una ruta `standards` atendida por `StandardsAgent` para preguntas normativas.
+- Los agentes `Researcher`, `Analyst` y `Planner` reciben instrucciones para invocar `graph_rag_lookup` antes de responder y citar documento / sección / URL.
+
+Ejecución típica:
+
+```bash
+uv run python -m orchestrator.cli chat --memory-provider hybrid
+```
+
+Establece `HYBRID_GRAPH_ENABLED=false` (o usa `--memory-provider mem0`) si quieres desactivar GraphRAG.
+
+### Pipelines de Ingestión
+
+El paquete `orchestrator/ingestion/` incluye:
+
+- `sample_loader.py`: procesa PDFs, genera metadatos y publica en vector/BM25/Neo4j.
+- `ingest_log.py`: registro SQLite que evita reingestas cuando el hash del fichero es idéntico.
+- `metadata_loader.py`: carga manifiestos JSON/YAML.
+- `templates/`: plantillas para estándares, manuales, cursos, papers, catálogos, tickets, reportes de compliance, etc.
+- `run_graph_sync.py`: resincroniza Neo4j a partir del almacenamiento local.
+
+#### Manifiestos y Plantillas
+
+Puedes mantener manifiestos por documento (p. ej. `manifests/ISO_9001.yaml`) reutilizando las plantillas. Campos soportados: `discipline`, `doc_type`, `version`, `effective_date`, `tags`, `references`, `retention_days`, etc.
+
+#### Ingestar PDFs
+
+```bash
+uv add pypdf  # instalar una vez
+uv run python -m orchestrator.ingestion.sample_loader \
+  --input docs/ISO_1234.pdf \
+  --metadata manifests/ \
+  --discipline ingenieria --version 2024 \
+  --user cli-user --run cli-run \
+  --memory-provider hybrid
+```
+
+- `--metadata` puede apuntar a un directorio (el loader buscará `filename.yaml/.json`) o a un fichero concreto.
+- Los flags de CLI sobrescriben los campos del manifiesto (`--title`, `--tags`, etc.).
+- `--retention-days` establece `expires_at` y el mantenedor FTS lo respeta junto con el TTL global.
+- `--force` reingesta aunque el hash no cambie.
+
+#### Sincronizar el Grafo
+
+```bash
+uv run python -m orchestrator.ingestion.run_graph_sync --memory-provider hybrid
+```
+
+Reconstruye nodos `Document`, `Chunk`, `Section`, `Tag` y relaciones `BELONGS_TO`, `PART_OF`, `HAS_TAG`, `REFERENCES` a partir del almacenamiento híbrido.
+
+### Acceso Programático
+
+- `MemoryManager.create_graph_tool()` devuelve el callable `graph_rag_lookup` para integrarlo en tus propios agentes.
+- `MemoryManager.retrieve_with_graph(...)` permite consultas directas combinadas (grafo + vector/lexical).
+- `MemoryManager.sync_graph()` y `run_graph_sync.py` resincronizan Neo4j tras cambios manuales.
+- `Orchestrator.create_graph_tool()` expone el mismo tool para workflows basados en clases.

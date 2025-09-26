@@ -1,0 +1,15 @@
+# Base metadata for engineering operation or maintenance manuals
+title: ""
+discipline: ""
+doc_type: manual
+version: ""
+effective_date: ""
+language: es
+source_url: ""
+retention_days: 180
+tags:
+  - manual
+  - operaciones
+extra:
+  equipment_family: ""
+  safety_level: ""

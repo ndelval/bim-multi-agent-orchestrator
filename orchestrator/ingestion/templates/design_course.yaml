@@ -1,0 +1,15 @@
+# Metadata template for academic course notes / open courseware
+title: ""
+discipline: ""
+doc_type: course_material
+version: ""
+effective_date: ""
+language: es
+source_url: ""
+retention_days: 365
+tags:
+  - curso
+  - teoria
+extra:
+  institution: ""
+  module: ""

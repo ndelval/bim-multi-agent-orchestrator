@@ -1,0 +1,16 @@
+# Base metadata for field/technical bulletins (USACE, military manuals, etc.)
+title: ""
+discipline: civil
+doc_type: field_manual
+version: ""
+effective_date: ""
+language: es
+source_url: ""
+retention_days: 240
+tags:
+  - manual
+  - campo
+  - procedimientos
+extra:
+  issuing_agency: ""
+  environment: ""

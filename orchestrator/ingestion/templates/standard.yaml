@@ -1,0 +1,15 @@
+# Base metadata for international/national standards (ISO, IEC, ANSI, etc.)
+title: ""
+discipline: ""
+doc_type: standard
+version: ""
+effective_date: ""
+language: es
+source_url: ""
+retention_days: 365
+tags:
+  - norma
+  - regulacion
+extra:
+  issuing_body: ""
+  compliance_category: ""
