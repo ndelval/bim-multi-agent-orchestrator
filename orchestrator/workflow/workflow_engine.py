@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from collections import defaultdict, deque
 import logging
 
-from praisonaiagents import Task, Agent
+from ..integrations.praisonai import Task, Agent
 
 from ..core.config import TaskConfig, ProcessType
 from ..core.exceptions import WorkflowError, TaskExecutionError, DependencyError

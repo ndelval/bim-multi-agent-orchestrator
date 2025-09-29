@@ -6,16 +6,12 @@ import asyncio
 import logging
 import sys
 import os
-from typing import Dict, List, Optional, Any, Callable, Union
+from typing import Dict, List, Optional, Any, Callable, Union, Sequence
 from pathlib import Path
+from textwrap import dedent
 
-# Add PraisonAI path to sys.path to import the custom adaptation
-current_dir = Path(__file__).parent.parent.parent
-praisonai_path = current_dir / "PraisonAI" / "src" / "praisonai-agents"
-if str(praisonai_path) not in sys.path:
-    sys.path.insert(0, str(praisonai_path))
-
-from praisonaiagents import PraisonAIAgents, Agent, Task
+from ..integrations.praisonai import PraisonAIAgents, Agent, Task, is_available
+from .embedding_utils import get_embedding_dimensions, build_embedder_config
 
 from .config import OrchestratorConfig, AgentConfig, TaskConfig
 from .exceptions import (
@@ -80,33 +76,20 @@ class Orchestrator:
             logger.info(f"Initializing orchestrator: {self.config.name}")
             
             # Initialize memory manager
-            if self.config.execution_config.memory:
+            if self.config.execution_config.memory and not self.memory_manager:
                 self.memory_manager = MemoryManager(self.config.memory_config)
                 logger.info("Memory manager initialized")
-            
+
             # Initialize workflow engine
-            self.workflow_engine = WorkflowEngine(
-                process_type=self.config.execution_config.process,
-                max_concurrent_tasks=5,  # Could be configurable
-                max_retries=3,
-                timeout=None
-            )
-            
-            # Set workflow callbacks
-            if self.workflow_engine:
-                self.workflow_engine.on_task_start = self._on_task_start
-                self.workflow_engine.on_task_complete = self._on_task_complete
-                self.workflow_engine.on_task_fail = self._on_task_fail
-                self.workflow_engine.on_workflow_complete = self._on_workflow_complete
-            
+            self._initialize_workflow_engine()
+
             # Create agents
             self._create_agents()
-            
-            # Create tasks
-            self._create_tasks()
-            
-            # Create PraisonAI system
-            self._create_praisonai_system()
+
+            # Create tasks (if any declared in config)
+            if self.config.tasks:
+                self._create_tasks()
+                self._create_praisonai_system()
             
             self.is_initialized = True
             logger.info("Orchestrator initialized successfully")
@@ -183,17 +166,11 @@ class Orchestrator:
                             mem0_cfg["embedder"] = top_embedder
                         # If orchestrator embedder set, prefer that
                         if self.config.embedder:
-                            # Compute embedding_dims if missing
+                            # Compute embedding_dims if missing using centralized utility
                             emb_conf = dict(self.config.embedder.config or {})
                             if "embedding_dims" not in emb_conf:
-                                model = str(emb_conf.get("model", "")).lower()
-                                dims_map = {
-                                    "text-embedding-3-large": 3072,
-                                    "text-embedding-3-small": 1536,
-                                    "text-embedding-ada-002": 1536,
-                                    "text-embedding-002": 1536,
-                                }
-                                emb_conf["embedding_dims"] = next((v for k, v in dims_map.items() if k in model), 1536)
+                                model = emb_conf.get("model", "")
+                                emb_conf["embedding_dims"] = get_embedding_dimensions(model)
                             mem0_cfg["embedder"] = {
                                 "provider": self.config.embedder.provider,
                                 "config": emb_conf,
@@ -204,9 +181,9 @@ class Orchestrator:
                                 "provider": "openai",
                                 "config": {"model": "gpt-4o-mini"}
                             }
-                except Exception:
-                    # Never break creation on enrichment
-                    pass
+                except Exception as e:
+                    # Log enrichment failures but don't break creation
+                    logger.warning(f"Failed to enrich Mem0 config with embedder: {e}")
                 if self.config.embedder:
                     embedder_config = {
                         "provider": self.config.embedder.provider,
@@ -254,9 +231,10 @@ class Orchestrator:
             recall_content = None
             try:
                 recall_content = self._build_recall_content()
-            except Exception as _e:
-                # Do not fail the run due to recall issues
-                logger.debug(f"Recall build skipped: {_e}")
+            except Exception as e:
+                # Log recall build failures but don't fail the entire run
+                logger.warning(f"Recall content build failed, continuing without recall: {e}")
+                recall_content = None
 
             # Use async execution if supported
             if self.config.execution_config.async_execution:
@@ -326,8 +304,9 @@ class Orchestrator:
                 run_id=run_id,
                 rerank=rerank,
             )
-        except Exception:
-            # Fallback to simple retrieval
+        except Exception as e:
+            # Fallback to simple retrieval if filtered retrieval fails
+            logger.warning(f"Filtered memory retrieval failed, falling back to simple retrieval: {e}")
             results = self.memory_manager.retrieve(query, limit=limit)
 
         if not results:
@@ -558,7 +537,7 @@ class Orchestrator:
         """Create orchestrator from environment variables."""
         config = OrchestratorConfig.from_env(prefix)
         return cls(config)
-    
+
     @classmethod
     def create_default(cls, name: str = "DefaultOrchestrator") -> "Orchestrator":
         """Create orchestrator with default configuration and common agents/tasks."""
@@ -634,6 +613,147 @@ class Orchestrator:
         config.tasks.extend(task_configs)
         
         return cls(config)
+
+    # ------------------------- Dynamic planning helpers -------------------------
+    def _initialize_workflow_engine(self) -> None:
+        """Create or reset the workflow engine with standard callbacks."""
+        self.workflow_engine = WorkflowEngine(
+            process_type=self.config.execution_config.process,
+            max_concurrent_tasks=5,
+            max_retries=3,
+            timeout=None,
+        )
+        self.workflow_engine.on_task_start = self._on_task_start
+        self.workflow_engine.on_task_complete = self._on_task_complete
+        self.workflow_engine.on_task_fail = self._on_task_fail
+        self.workflow_engine.on_workflow_complete = self._on_workflow_complete
+
+    def plan_from_prompt(
+        self,
+        prompt: str,
+        agent_sequence: Sequence[str],
+        *,
+        recall_snippets: Optional[Sequence[str]] = None,
+        assignments: Optional[Sequence[Dict[str, Any]]] = None,
+    ) -> None:
+        """Generate task plan dynamically from prompt and selected agents."""
+        if not agent_sequence:
+            raise ValueError("agent_sequence must contain at least one agent")
+
+        if not self.is_initialized:
+            self.initialize()
+
+        enabled_agents = {agent.name: agent for agent in self.config.get_enabled_agents()}
+        missing_agents = [name for name in agent_sequence if name not in enabled_agents]
+        if missing_agents:
+            raise AgentCreationError(
+                f"Agents not available in orchestrator configuration: {missing_agents}"
+            )
+
+        # Build new task configurations
+        dynamic_tasks: List[TaskConfig] = []
+        previous_task_name: Optional[str] = None
+        assignment_iter = list(assignments or [])
+        for index, agent_name in enumerate(agent_sequence):
+            agent_cfg = enabled_agents[agent_name]
+            task_name = self._generate_task_name(agent_name, index)
+            assignment_payload = assignment_iter[index] if index < len(assignment_iter) else {}
+            objective = assignment_payload.get("objective") or assignment_payload.get("description")
+            deliverable = assignment_payload.get("expected_output") or assignment_payload.get("deliverable")
+            tags = assignment_payload.get("tags")
+            description = self._compose_task_description(
+                agent_cfg,
+                prompt,
+                recall_snippets,
+                task_hint=self._task_type_hint(agent_name),
+                assignment_objective=objective,
+                assignment_tags=tags,
+            )
+            expected_output = self._compose_expected_output(agent_cfg, prompt, deliverable=deliverable)
+            dynamic_tasks.append(
+                TaskConfig(
+                    name=task_name,
+                    description=description,
+                    expected_output=expected_output,
+                    agent_name=agent_name,
+                    async_execution=False,
+                    is_start=index == 0,
+                    context=[previous_task_name] if previous_task_name else [],
+                )
+            )
+            previous_task_name = task_name
+
+        # Replace current task configuration and rebuild execution stack
+        self.config.tasks = dynamic_tasks
+        self.tasks = []
+
+        # Refresh workflow engine state and PraisonAI system
+        self._initialize_workflow_engine()
+        self._create_tasks()
+        if self.workflow_engine and self.tasks:
+            self.workflow_engine.add_tasks(self.tasks, self.config.tasks)
+        self._create_praisonai_system()
+
+    @staticmethod
+    def _generate_task_name(agent_name: str, index: int) -> str:
+        slug = agent_name.lower().replace(" ", "_")
+        return f"{slug}_task_{index + 1}"
+
+    @staticmethod
+    def _compose_task_description(
+        agent_cfg: AgentConfig,
+        prompt: str,
+        recall_snippets: Optional[Sequence[str]] = None,
+        *,
+        task_hint: Optional[str] = None,
+        assignment_objective: Optional[str] = None,
+        assignment_tags: Optional[Sequence[str]] = None,
+    ) -> str:
+        recall_block = ""
+        if recall_snippets:
+            formatted = "\n".join(f"  - {snippet}" for snippet in recall_snippets if snippet)
+            if formatted:
+                recall_block = f"\nContexto recuperado:\n{formatted}"
+
+        hint_block = f"\nTipo de tarea sugerido: {task_hint}" if task_hint else ""
+        objective_block = f"\nObjetivo específico: {assignment_objective}" if assignment_objective else ""
+        tags_block = ""
+        if assignment_tags:
+            tag_str = ", ".join(str(tag) for tag in assignment_tags if tag)
+            if tag_str:
+                tags_block = f"\nEtiquetas: {tag_str}"
+
+        return (
+            dedent(
+                f"""
+                Rol del agente: {agent_cfg.role}
+                Objetivo base: {agent_cfg.goal}{hint_block}{objective_block}{tags_block}
+
+                Prompt actual:
+                {prompt}
+                """
+            ).strip()
+            + recall_block
+            + "\n\nSigue tus instrucciones base y entrega un resultado concreto y accionable."
+        )
+
+    @staticmethod
+    def _compose_expected_output(agent_cfg: AgentConfig, prompt: str, *, deliverable: Optional[str] = None) -> str:
+        goal = agent_cfg.goal or "Produce un entregable"
+        if deliverable:
+            return f"{deliverable} (objetivo base: {goal}). Contexto: {prompt}"
+        return f"{goal}. Responde al prompt: {prompt}"
+
+    @staticmethod
+    def _task_type_hint(agent_name: str) -> Optional[str]:
+        hints = {
+            "Researcher": "research",
+            "Analyst": "analysis",
+            "Planner": "planning",
+            "StandardsAgent": "review",
+            "QuickResponder": "documentation",
+        }
+        return hints.get(agent_name)
     
     def __enter__(self):
         """Context manager entry."""

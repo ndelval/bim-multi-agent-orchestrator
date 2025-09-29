@@ -6,8 +6,7 @@ from typing import Dict, Type, List, Any, Optional, Callable
 from abc import ABC, abstractmethod
 import logging
 
-from praisonaiagents import Agent
-from praisonaiagents.tools import duckduckgo
+from ..integrations.praisonai import Agent, duckduckgo
 
 from ..core.config import AgentConfig
 from ..core.exceptions import AgentCreationError, TemplateError

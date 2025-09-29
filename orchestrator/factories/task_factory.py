@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 import logging
 from collections import defaultdict, deque
 
-from praisonaiagents import Task, Agent
+from ..integrations.praisonai import Task, Agent
 
 from ..core.config import TaskConfig
 from ..core.exceptions import TaskExecutionError, DependencyError, TemplateError
