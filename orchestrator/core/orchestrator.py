@@ -10,6 +10,21 @@ from typing import Dict, List, Optional, Any, Callable, Union, Sequence
 from pathlib import Path
 from textwrap import dedent
 
+# Compatibility layer - supports both PraisonAI and LangGraph
+try:
+    # Try LangGraph first (new system)
+    from ..integrations.langchain_integration import OrchestratorState, StateGraph, HumanMessage
+    from ..factories.graph_factory import GraphFactory
+    USING_LANGGRAPH = True
+except ImportError:
+    # Fallback to PraisonAI (legacy system)
+    OrchestratorState = None
+    StateGraph = None
+    HumanMessage = None
+    GraphFactory = None
+    USING_LANGGRAPH = False
+
+# Always import PraisonAI for fallback compatibility
 from ..integrations.praisonai import PraisonAIAgents, Agent, Task, is_available
 from .embedding_utils import get_embedding_dimensions, build_embedder_config
 
@@ -28,6 +43,7 @@ from ..workflow.workflow_engine import WorkflowEngine, WorkflowMetrics
 
 
 logger = logging.getLogger(__name__)
+logger.info(f"Orchestrator initialized with {'LangGraph' if USING_LANGGRAPH else 'PraisonAI'} backend")
 
 
 class Orchestrator:
@@ -53,6 +69,10 @@ class Orchestrator:
         self.memory_manager: Optional[MemoryManager] = None
         self.workflow_engine: Optional[WorkflowEngine] = None
         
+        # LangGraph components (new system)
+        self.graph_factory: Optional[GraphFactory] = None
+        self.compiled_graph: Optional[Any] = None  # Compiled StateGraph
+        
         # State
         self.agents: Dict[str, Agent] = {}
         self.tasks: List[Task] = []
@@ -76,8 +96,8 @@ class Orchestrator:
             logger.info(f"Initializing orchestrator: {self.config.name}")
             
             # Initialize memory manager
-            if self.config.execution_config.memory and not self.memory_manager:
-                self.memory_manager = MemoryManager(self.config.memory_config)
+            if self.config.memory is not None and not self.memory_manager:
+                self.memory_manager = MemoryManager(self.config.memory)
                 logger.info("Memory manager initialized")
 
             # Initialize workflow engine
@@ -86,10 +106,14 @@ class Orchestrator:
             # Create agents
             self._create_agents()
 
-            # Create tasks (if any declared in config)
-            if self.config.tasks:
-                self._create_tasks()
-                self._create_praisonai_system()
+            # Create execution system based on backend
+            if USING_LANGGRAPH:
+                self._create_langgraph_system()
+            else:
+                # Legacy PraisonAI system
+                if self.config.tasks:
+                    self._create_tasks()
+                    self._create_praisonai_system()
             
             self.is_initialized = True
             logger.info("Orchestrator initialized successfully")
@@ -102,8 +126,9 @@ class Orchestrator:
         """Create agents from configuration."""
         try:
             self.agents = {}
-            enabled_agents = self.config.get_enabled_agents()
-            
+            # Get enabled agents from configuration
+            enabled_agents = [agent for agent in self.config.agents if agent.enabled]
+
             for agent_config in enabled_agents:
                 agent = self.agent_factory.create_agent(agent_config)
                 self.agents[agent_config.name] = agent
@@ -138,7 +163,7 @@ class Orchestrator:
             
             if self.memory_manager:
                 # Convert MemoryConfig dataclass to dict expected by PraisonAIAgents
-                mc = self.config.memory_config
+                mc = self.config.memory
                 memory_config = {
                     "provider": mc.provider.value,
                     "use_embedding": mc.use_embedding,
@@ -193,19 +218,95 @@ class Orchestrator:
             self.praisonai_system = PraisonAIAgents(
                 agents=list(self.agents.values()),
                 tasks=self.tasks,
-                process=self.config.execution_config.process.value,
-                verbose=self.config.execution_config.verbose,
-                max_iter=self.config.execution_config.max_iter,
+                process=self.config.process,
+                verbose=self.config.verbose,
+                max_iter=self.config.max_iter,
                 name=self.config.name,
-                memory=self.config.execution_config.memory,
+                memory=(self.config.memory is not None),
                 memory_config=memory_config,
                 embedder=embedder_config,
-                user_id=self.config.execution_config.user_id
+                user_id=self.config.user_id
             )
             
             logger.info("PraisonAI system created")
         except Exception as e:
             raise OrchestratorError(f"Failed to create PraisonAI system: {str(e)}")
+    
+    def _create_langgraph_system(self) -> None:
+        """Create the LangGraph StateGraph system with tool pre-registration."""
+        try:
+            if not USING_LANGGRAPH:
+                raise OrchestratorError("LangGraph components not available")
+
+            # STEP 1: Initialize graph factory
+            self.graph_factory = GraphFactory(self.agent_factory)
+
+            # STEP 2: Create dynamic tools BEFORE agent creation
+            dynamic_tools = {}
+            if self.memory_manager:
+                try:
+                    graph_tool = self.create_graph_tool(
+                        user_id=self.config.user_id,
+                        run_id=self.config.run_id
+                    )
+                    dynamic_tools['graph_rag_lookup'] = graph_tool
+                    logger.info("Created GraphRAG tool for agent attachment")
+                except Exception as e:
+                    logger.warning(f"Failed to create GraphRAG tool: {e}")
+
+            # STEP 3: Register dynamic tools with factory
+            if dynamic_tools:
+                self.graph_factory.register_dynamic_tools(dynamic_tools)
+
+            # STEP 4: Enrich agent configs with dynamic tool names
+            from copy import deepcopy
+            enriched_agent_configs = []
+            for agent_config in self.config.agents:
+                if agent_config.enabled:
+                    # Clone to avoid mutation
+                    enriched = deepcopy(agent_config)
+
+                    # Add GraphRAG tool if agent instructions reference it
+                    if 'graph_rag_lookup' in dynamic_tools:
+                        if any(keyword in agent_config.instructions.lower()
+                               for keyword in ['graph_rag_lookup', 'graphrag']):
+                            if 'graph_rag_lookup' not in enriched.tools:
+                                enriched.tools.append('graph_rag_lookup')
+                                logger.debug(f"Added GraphRAG tool to agent {enriched.name}")
+
+                    enriched_agent_configs.append(enriched)
+
+            # STEP 5: Update config with enriched agents
+            self.config.agents = enriched_agent_configs
+
+            # STEP 6: Create StateGraph based on configuration
+            if self.config.tasks:
+                # Use workflow graph if tasks are defined
+                self.compiled_graph = self.graph_factory.create_workflow_graph(self.config).compile()
+                logger.info("Created workflow StateGraph from tasks")
+            else:
+                # Use chat graph for agent-only configurations
+                enabled_agents = enriched_agent_configs
+                router_agent = None
+
+                # Find router agent if available
+                for agent_config in enabled_agents:
+                    if "orchestrator" in agent_config.name.lower() or "router" in agent_config.role.lower():
+                        router_agent = agent_config
+                        break
+
+                # Create chat graph
+                other_agents = [a for a in enabled_agents if a != router_agent]
+                self.compiled_graph = self.graph_factory.create_chat_graph(
+                    other_agents,
+                    router_agent
+                ).compile()
+                logger.info(f"Created chat StateGraph with {len(other_agents)} agents")
+
+            logger.info("LangGraph system created successfully with tool integration")
+
+        except Exception as e:
+            raise OrchestratorError(f"Failed to create LangGraph system: {str(e)}")
     
     async def run(self) -> Any:
         """
@@ -217,8 +318,13 @@ class Orchestrator:
         if not self.is_initialized:
             raise OrchestratorError("Orchestrator not initialized")
         
-        if not self.praisonai_system:
-            raise OrchestratorError("PraisonAI system not created")
+        # Check that appropriate execution system is available
+        if USING_LANGGRAPH:
+            if not self.compiled_graph:
+                raise OrchestratorError("LangGraph system not created")
+        else:
+            if not self.praisonai_system:
+                raise OrchestratorError("PraisonAI system not created")
         
         try:
             logger.info(f"Starting orchestrator workflow: {self.config.name}")
@@ -227,7 +333,7 @@ class Orchestrator:
             if self.on_workflow_start:
                 self.on_workflow_start()
             
-            # Optional global recall context from memory (inject into all tasks)
+            # Optional global recall context from memory
             recall_content = None
             try:
                 recall_content = self._build_recall_content()
@@ -236,15 +342,19 @@ class Orchestrator:
                 logger.warning(f"Recall content build failed, continuing without recall: {e}")
                 recall_content = None
 
-            # Use async execution if supported
-            if self.config.execution_config.async_execution:
-                try:
-                    result = await self.praisonai_system.astart(content=recall_content)
-                except AttributeError:
-                    # Fallback to sync execution
-                    result = await asyncio.to_thread(self.praisonai_system.start, recall_content)
+            # Execute based on backend system
+            if USING_LANGGRAPH:
+                result = await self._run_langgraph_workflow(recall_content)
             else:
-                result = await asyncio.to_thread(self.praisonai_system.start, recall_content)
+                # Legacy PraisonAI execution
+                if self.config.async_execution:
+                    try:
+                        result = await self.praisonai_system.astart(content=recall_content)
+                    except AttributeError:
+                        # Fallback to sync execution
+                        result = await asyncio.to_thread(self.praisonai_system.start, recall_content)
+                else:
+                    result = await asyncio.to_thread(self.praisonai_system.start, recall_content)
             
             logger.info("Orchestrator workflow completed successfully")
             return result
@@ -263,6 +373,50 @@ class Orchestrator:
             The result of the workflow execution.
         """
         return asyncio.run(self.run())
+    
+    async def _run_langgraph_workflow(self, recall_content: Optional[str] = None) -> Any:
+        """
+        Run the LangGraph StateGraph workflow.
+        
+        Args:
+            recall_content: Optional memory recall content to include in execution
+            
+        Returns:
+            The result of the StateGraph execution
+        """
+        try:
+            # Determine the user prompt - for compatibility with existing patterns
+            # In the future, this could come from a variety of sources
+            user_prompt = recall_content or "Execute orchestrator workflow"
+
+            # Build initial state
+            initial_state = OrchestratorState(
+                messages=[HumanMessage(content=user_prompt)],
+                input_prompt=user_prompt,
+                memory_context=recall_content,
+                max_iterations=self.config.max_iter,
+                recall_items=recall_content.split('\n') if recall_content else []
+            )
+            
+            # Execute the StateGraph
+            logger.info("Executing LangGraph StateGraph workflow")
+            result = await asyncio.to_thread(self.compiled_graph.invoke, initial_state)
+            
+            # Extract final output from state
+            if hasattr(result, 'final_output') and result.final_output:
+                return result.final_output
+            elif hasattr(result, 'messages') and result.messages:
+                # Return the last AI message
+                for message in reversed(result.messages):
+                    if hasattr(message, 'content') and 'AI' in str(type(message)):
+                        return message.content
+            
+            # Fallback - return the entire state
+            return str(result)
+            
+        except Exception as e:
+            logger.error(f"LangGraph workflow execution failed: {str(e)}")
+            raise WorkflowError(f"LangGraph execution failed: {str(e)}")
 
     # ------------------------- Memory Recall Helpers -------------------------
     def _build_recall_content(self) -> Optional[str]:
@@ -274,7 +428,7 @@ class Orchestrator:
             "limit": 5,
             "agent_id": "mecanico",
             "run_id": "proyecto_A",
-            "user_id": "override_user",  # defaults to execution_config.user_id
+            "user_id": "override_user",  # defaults to config.user_id
             "rerank": true
           }
         """
@@ -289,7 +443,7 @@ class Orchestrator:
             return None
 
         limit = recall_cfg.get("limit", recall_cfg.get("top_k", 5))
-        user_id = recall_cfg.get("user_id", self.config.execution_config.user_id)
+        user_id = recall_cfg.get("user_id", self.config.user_id)
         agent_id = recall_cfg.get("agent_id")
         run_id = recall_cfg.get("run_id")
         rerank = recall_cfg.get("rerank")
@@ -412,7 +566,7 @@ class Orchestrator:
             "initialized": self.is_initialized,
             "agents": {
                 "total": len(self.config.agents),
-                "enabled": len(self.config.get_enabled_agents()),
+                "enabled": len([a for a in self.config.agents if a.enabled]),
                 "types": list(self.agent_factory.list_templates())
             },
             "tasks": {
@@ -420,9 +574,9 @@ class Orchestrator:
                 "types": list(self.task_factory.list_templates())
             },
             "execution": {
-                "process": self.config.execution_config.process.value,
-                "async": self.config.execution_config.async_execution,
-                "memory": self.config.execution_config.memory
+                "process": self.config.process,
+                "async": self.config.async_execution,
+                "memory": (self.config.memory is not None)
             }
         }
         
@@ -440,8 +594,8 @@ class Orchestrator:
         """Create a GraphRAG lookup tool if the memory manager supports it."""
         if not self.memory_manager:
             raise MemoryError("Memory manager not initialized; cannot create graph tool")
-        user = user_id or self.config.execution_config.user_id
-        run = run_id or self.config.execution_config.user_id
+        user = user_id or self.config.user_id
+        run = run_id or self.config.user_id
         return self.memory_manager.create_graph_tool(default_user_id=user, default_run_id=run)
     
     def import_config(self, file_path: Union[str, Path]) -> None:
@@ -618,7 +772,7 @@ class Orchestrator:
     def _initialize_workflow_engine(self) -> None:
         """Create or reset the workflow engine with standard callbacks."""
         self.workflow_engine = WorkflowEngine(
-            process_type=self.config.execution_config.process,
+            process_type=self.config.process,
             max_concurrent_tasks=5,
             max_retries=3,
             timeout=None,
@@ -643,7 +797,7 @@ class Orchestrator:
         if not self.is_initialized:
             self.initialize()
 
-        enabled_agents = {agent.name: agent for agent in self.config.get_enabled_agents()}
+        enabled_agents = {agent.name: agent for agent in self.config.agents if agent.enabled}
         missing_agents = [name for name in agent_sequence if name not in enabled_agents]
         if missing_agents:
             raise AgentCreationError(
@@ -675,7 +829,7 @@ class Orchestrator:
                     name=task_name,
                     description=description,
                     expected_output=expected_output,
-                    agent_name=agent_name,
+                    agent=agent_name,
                     async_execution=False,
                     is_start=index == 0,
                     context=[previous_task_name] if previous_task_name else [],

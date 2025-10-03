@@ -162,16 +162,56 @@ class MemoryManager:
             } if self.config.embedder else None
         }
     
+    def retrieve_with_graph(
+        self,
+        query: str,
+        limit: int = 5,
+        **kwargs
+    ) -> List[Dict[str, Any]]:
+        """
+        Retrieve memories using graph-enhanced search if provider supports it.
+
+        Args:
+            query: Search query text
+            limit: Maximum number of results to return
+            **kwargs: Additional provider-specific parameters (tags, document_ids,
+                     sections, user_id, run_id, agent_id)
+
+        Returns:
+            List of memory results with graph context if available
+
+        Note:
+            Falls back to standard retrieve() if provider doesn't implement
+            graph-enhanced search. The hybrid provider uses RRF (Reciprocal Rank
+            Fusion) and cross-encoder reranking instead of similarity thresholds.
+        """
+        if not self.provider:
+            raise MemoryError("Memory provider not initialized")
+
+        if hasattr(self.provider, "retrieve_with_graph"):
+            return self.provider.retrieve_with_graph(
+                query=query,
+                limit=limit,
+                **kwargs
+            )
+        else:
+            # Graceful degradation for providers without graph support
+            logger.debug(
+                f"Provider {type(self.provider).__name__} doesn't support "
+                "graph-enhanced retrieval. Falling back to standard retrieve()."
+            )
+            return self.provider.retrieve(query, limit=limit, **kwargs)
+
     def create_graph_tool(self, *, default_user_id: str, default_run_id: str):
         """Create a GraphRAG lookup tool if the provider supports it."""
         # This method would delegate to the provider if it supports graph operations
         # For now, we'll raise an error to indicate it's not implemented
         if not self.provider:
             raise MemoryError("Memory provider not initialized")
-        
+
         if hasattr(self.provider, 'create_graph_tool'):
             return self.provider.create_graph_tool(
-                default_user_id=default_user_id, 
+                default_user_id=default_user_id,
                 default_run_id=default_run_id
             )
         else:

@@ -51,3 +51,8 @@ class ProviderError(MemoryError):
 class TemplateError(OrchestratorError):
     """Raised when there's an error with agent or task templates."""
     pass
+
+
+class GraphCreationError(OrchestratorError):
+    """Raised when there's an error creating LangGraph StateGraphs."""
+    pass

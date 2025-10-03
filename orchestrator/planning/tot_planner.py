@@ -454,8 +454,316 @@ def generate_plan_with_tot(
     return {"assignments": assignments, "metadata": metadata}
 
 
+def generate_graph_with_tot(
+    prompt: str,
+    recall_snippets: Sequence[str],
+    agent_catalog: Sequence[AgentConfig],
+    settings: Optional[PlanningSettings] = None,
+    memory_config: Optional[MemoryConfig] = None,
+    enable_graph_planning: bool = True,
+) -> Dict[str, Any]:
+    """
+    Generate StateGraph specification using Tree-of-Thought planning.
+    
+    This function combines the existing assignment-based planning with new
+    graph-based planning capabilities, providing backward compatibility
+    while enabling advanced graph workflows.
+    
+    Args:
+        prompt: User's problem statement
+        recall_snippets: Context from memory retrieval
+        agent_catalog: Available agents for graph construction
+        settings: Planning configuration
+        memory_config: Memory system configuration
+        enable_graph_planning: Whether to use advanced graph planning
+        
+    Returns:
+        Dictionary containing:
+        - assignments: Traditional assignment list (for compatibility)
+        - graph_spec: StateGraphSpec object (if graph planning enabled)
+        - metadata: Planning metadata and usage information
+        - planning_method: "graph" or "assignments"
+    """
+    if not _TOT_AVAILABLE and not _try_import_tot():
+        logger.warning("ToT not available, falling back to assignments")
+        enable_graph_planning = False
+    
+    settings = settings or PlanningSettings()
+    
+    # Try graph planning first if enabled
+    if enable_graph_planning:
+        try:
+            from .tot_graph_planner import generate_graph_with_tot as _generate_graph_with_tot
+            from .tot_graph_planner import GraphPlanningSettings
+            
+            # Convert PlanningSettings to GraphPlanningSettings
+            graph_settings = GraphPlanningSettings(
+                backend=settings.backend,
+                temperature=settings.temperature,
+                max_steps=settings.max_steps,
+                n_generate_sample=settings.n_generate_sample,
+                n_evaluate_sample=settings.n_evaluate_sample,
+                n_select_sample=settings.n_select_sample,
+                enable_parallel_planning=True,
+                enable_conditional_routing=True
+            )
+            
+            # Generate graph specification using ToT
+            graph_result = _generate_graph_with_tot(
+                prompt, recall_snippets, agent_catalog, graph_settings, memory_config
+            )
+            
+            # Extract components
+            graph_spec = graph_result.get("graph_spec")
+            fallback_assignments = graph_result.get("fallback_assignments", [])
+            graph_metadata = graph_result.get("metadata", {})
+            
+            logger.info(f"ToT graph planning completed successfully with {len(fallback_assignments)} assignments")
+            
+            return {
+                "assignments": fallback_assignments,
+                "graph_spec": graph_spec,
+                "metadata": {
+                    **graph_metadata,
+                    "planning_method": "graph",
+                    "fallback_assignments": len(fallback_assignments)
+                },
+                "planning_method": "graph"
+            }
+            
+        except ImportError:
+            logger.warning("Graph planning modules not available, falling back to assignments")
+            enable_graph_planning = False
+        except Exception as e:
+            logger.warning(f"Graph planning failed: {e}, falling back to assignments")
+            enable_graph_planning = False
+    
+    # Fallback to traditional assignment planning
+    logger.info("Using traditional assignment-based ToT planning")
+    assignment_result = generate_plan_with_tot(
+        prompt, recall_snippets, agent_catalog, settings, memory_config
+    )
+    
+    assignments = assignment_result.get("assignments", [])
+    assignment_metadata = assignment_result.get("metadata", {})
+    
+    # Create fallback graph specification for compatibility
+    fallback_graph_spec = None
+    if assignments:
+        try:
+            from .graph_specifications import create_simple_sequential_graph
+            fallback_graph_spec = create_simple_sequential_graph(
+                f"assignments_graph_{len(assignments)}_steps",
+                assignments
+            )
+            logger.debug("Created fallback graph specification from assignments")
+        except Exception as e:
+            logger.warning(f"Failed to create fallback graph specification: {e}")
+    
+    return {
+        "assignments": assignments,
+        "graph_spec": fallback_graph_spec,
+        "metadata": {
+            **assignment_metadata,
+            "planning_method": "assignments",
+            "converted_to_graph": fallback_graph_spec is not None
+        },
+        "planning_method": "assignments"
+    }
+
+
+def create_graph_from_assignments(
+    assignments: List[Dict[str, Any]],
+    graph_name: Optional[str] = None
+) -> Optional[Any]:
+    """
+    Convert assignment list to StateGraph specification.
+    
+    This utility function bridges the gap between existing assignment-based
+    planning and new graph-based execution systems.
+    
+    Args:
+        assignments: List of agent assignments
+        graph_name: Optional name for the graph
+        
+    Returns:
+        StateGraphSpec object or None if conversion fails
+    """
+    if not assignments:
+        return None
+    
+    try:
+        from .graph_specifications import create_simple_sequential_graph
+        
+        graph_name = graph_name or f"converted_graph_{len(assignments)}_steps"
+        graph_spec = create_simple_sequential_graph(graph_name, assignments)
+        
+        logger.info(f"Converted {len(assignments)} assignments to graph specification")
+        return graph_spec
+        
+    except Exception as e:
+        logger.error(f"Failed to convert assignments to graph: {e}")
+        return None
+
+
+def plan_with_graph_compilation(
+    prompt: str,
+    recall_snippets: Sequence[str],
+    agent_catalog: Sequence[AgentConfig],
+    compile_graph: bool = True,
+    settings: Optional[PlanningSettings] = None,
+    memory_config: Optional[MemoryConfig] = None,
+) -> Dict[str, Any]:
+    """
+    Complete planning pipeline with optional graph compilation.
+    
+    This function provides a full pipeline from ToT planning to compiled
+    StateGraph ready for execution.
+    
+    Args:
+        prompt: User's problem statement
+        recall_snippets: Context from memory retrieval
+        agent_catalog: Available agents
+        compile_graph: Whether to compile the graph specification
+        settings: Planning configuration
+        memory_config: Memory configuration
+        
+    Returns:
+        Dictionary containing:
+        - assignments: Assignment list
+        - graph_spec: StateGraphSpec object
+        - compiled_graph: Compiled StateGraph (if compile_graph=True)
+        - metadata: Planning and compilation metadata
+    """
+    # Generate graph specification using ToT
+    planning_result = generate_graph_with_tot(
+        prompt, recall_snippets, agent_catalog, settings, memory_config
+    )
+    
+    assignments = planning_result["assignments"]
+    graph_spec = planning_result["graph_spec"]
+    planning_metadata = planning_result["metadata"]
+    
+    compiled_graph = None
+    compilation_metadata = {}
+    
+    # Compile graph if requested and specification is available
+    if compile_graph and graph_spec:
+        try:
+            from .graph_compiler import GraphCompiler
+            
+            # Create compiler and compile graph
+            compiler = GraphCompiler()
+            compiled_workflow = compiler.compile_graph_spec(graph_spec, agent_catalog)
+            compiled_graph = compiled_workflow.compile()
+            
+            compilation_metadata = {
+                "compilation_successful": True,
+                "nodes_compiled": len(graph_spec.nodes),
+                "edges_compiled": len(graph_spec.edges),
+                "parallel_groups": len(graph_spec.parallel_groups)
+            }
+            
+            logger.info(f"Successfully compiled graph with {len(graph_spec.nodes)} nodes")
+            
+        except Exception as e:
+            logger.error(f"Graph compilation failed: {e}")
+            compilation_metadata = {
+                "compilation_successful": False,
+                "compilation_error": str(e)
+            }
+    
+    return {
+        "assignments": assignments,
+        "graph_spec": graph_spec,
+        "compiled_graph": compiled_graph,
+        "metadata": {
+            **planning_metadata,
+            **compilation_metadata,
+            "pipeline": "full_graph_compilation"
+        }
+    }
+
+
+def get_planning_capabilities() -> Dict[str, Any]:
+    """
+    Get information about available planning capabilities.
+    
+    Returns:
+        Dictionary with capability information
+    """
+    capabilities = {
+        "tot_available": _TOT_AVAILABLE,
+        "assignment_planning": True,
+        "graph_planning": False,
+        "graph_compilation": False
+    }
+    
+    # Check graph planning availability
+    try:
+        from .tot_graph_planner import generate_graph_with_tot
+        capabilities["graph_planning"] = True
+    except ImportError:
+        pass
+    
+    # Check graph compilation availability
+    try:
+        from .graph_compiler import GraphCompiler
+        capabilities["graph_compilation"] = True
+    except ImportError:
+        pass
+    
+    return capabilities
+
+
+def validate_planning_environment() -> List[str]:
+    """
+    Validate the planning environment and return any issues.
+    
+    Returns:
+        List of validation errors (empty if all OK)
+    """
+    errors = []
+    
+    # Check ToT availability
+    if not _TOT_AVAILABLE:
+        if not _try_import_tot():
+            errors.append("Tree-of-Thought package not available")
+    
+    # Check graph planning modules
+    try:
+        from .tot_graph_planner import generate_graph_with_tot
+    except ImportError as e:
+        errors.append(f"Graph planning not available: {e}")
+    
+    try:
+        from .graph_compiler import GraphCompiler
+    except ImportError as e:
+        errors.append(f"Graph compilation not available: {e}")
+    
+    try:
+        from .graph_specifications import StateGraphSpec
+    except ImportError as e:
+        errors.append(f"Graph specifications not available: {e}")
+    
+    # Check LangGraph integration
+    try:
+        from ..integrations.langchain_integration import is_available
+        if not is_available():
+            errors.append("LangChain/LangGraph integration not available")
+    except ImportError as e:
+        errors.append(f"LangChain integration error: {e}")
+    
+    return errors
+
+
 __all__ = [
     "generate_plan_with_tot",
+    "generate_graph_with_tot",
+    "plan_with_graph_compilation",
+    "create_graph_from_assignments",
+    "get_planning_capabilities",
+    "validate_planning_environment",
     "PlanningSettings",
     "parse_plan_to_assignments",
     "summarize_memory_config",

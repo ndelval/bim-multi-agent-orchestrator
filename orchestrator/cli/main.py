@@ -1,592 +1,407 @@
-"""Command-line utilities for the engineering orchestrator."""
-
-from __future__ import annotations
+#!/usr/bin/env python3
+"""
+Enhanced CLI for PraisonAI-based orchestrator with real-time Rich display.
+Provides chat and info commands with comprehensive memory integration.
+"""
 
 import argparse
-import copy
-import json
 import logging
 import os
 import sys
-from dataclasses import asdict
-from textwrap import dedent
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+import json
+from pathlib import Path
+from typing import Optional, List, Dict, Any
 
-from orchestrator.core.config import (
-    AgentConfig,
-    EmbedderConfig,
-    ExecutionConfig,
-    MemoryConfig,
-    MemoryProvider,
-    OrchestratorConfig,
-    ProcessType,
-    TaskConfig,
-)
-from orchestrator.core.exceptions import WorkflowError
+from dotenv import load_dotenv
+from rich.console import Console
+from rich.panel import Panel
+from rich.markdown import Markdown
+
 from orchestrator.core.orchestrator import Orchestrator
-from orchestrator.memory.document_schema import default_conversation_metadata
-from orchestrator.memory.memory_manager import MemoryManager
-from orchestrator.templates.mock_engineering import create_mock_engineering_config
+from orchestrator.core.config import OrchestratorConfig, AgentConfig, TaskConfig
 
+# Updated import path for new memory manager module structure
+from orchestrator.memory.memory_manager import MemoryManager
+from orchestrator.memory.providers.registry import MemoryProviderRegistry
+from orchestrator.factories.agent_factory import AgentFactory
+from orchestrator.factories.task_factory import TaskFactory
 
 try:
-    from dotenv import load_dotenv
-except ImportError:  # pragma: no cover - optional dependency
-    load_dotenv = None
+    from praisonaiagents.tools.duckduckgo import duckduckgo_tool
+    from praisonaiagents.tools.wikipedia import wikipedia_tool
+except ImportError:
+    duckduckgo_tool = None
+    wikipedia_tool = None
 
-if load_dotenv:
-    load_dotenv()  # Load .env so OPENAI_API_KEY and others are available
+# Import Rich display event system
+from orchestrator.cli.events import (
+    emit_router_decision,
+    emit_agent_start,
+    emit_agent_progress,
+    emit_agent_complete,
+    emit_final_answer,
+)
+from orchestrator.cli.rich_display import RichWorkflowDisplay
 
-from orchestrator.planning import PlanningSettings, generate_plan_with_tot
-from orchestrator.core.embedding_utils import get_embedding_dimensions
+
+# Import GraphAdapter for both backends
+from orchestrator.cli.graph_adapter import GraphAgentAdapter
+
 
 logger = logging.getLogger(__name__)
 
-ROUTE_OPTIONS = ["quick", "research", "analysis", "standards"]
-DEFAULT_SESSION_TITLE = "CLI Engineering Session"
-TOT_DEFAULT_BACKEND = os.getenv("ORCH_TOT_BACKEND", "gpt-4o-mini")
 
-
-def _setup_logging(verbose: int) -> None:
-    level = logging.WARNING
-    if verbose >= 2:
-        level = logging.INFO
-    if verbose >= 4:
-        level = logging.DEBUG
+def _setup_logging(verbose: bool) -> None:
+    """Configure logging based on verbosity flag."""
+    level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
-        level=level,
-        format="[%(asctime)s] %(levelname)7s %(name)s:%(lineno)d %(message)s",
+        level=level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
 
 
-# Use centralized embedding dimensions instead of duplicated logic
-# Function removed - now using get_embedding_dimensions from embedding_utils
+def _show_memory_info(args: argparse.Namespace) -> int:
+    """Display memory configuration information."""
+    console = Console()
+    provider_name = args.memory_provider.lower()
 
+    # Get registered provider class
+    provider_class = MemoryProviderRegistry.get_provider(provider_name)
+    if not provider_class:
+        console.print(f"[red]Unknown memory provider: {provider_name}[/red]")
+        return 1
 
-def _env_bool(name: str, default: Optional[bool] = None) -> Optional[bool]:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    value = raw.strip().lower()
-    if value in {"1", "true", "yes", "on"}:
-        return True
-    if value in {"0", "false", "no", "off"}:
-        return False
-    return default
+    # Display configuration details
+    config_panel = Panel(
+        f"[bold cyan]Memory Provider:[/bold cyan] {provider_name}\n"
+        f"[bold cyan]Provider Class:[/bold cyan] {provider_class.__name__}\n"
+        f"[bold cyan]Module:[/bold cyan] {provider_class.__module__}",
+        title="Memory Configuration",
+        border_style="green",
+    )
+    console.print(config_panel)
 
-
-def _env_int(name: str, default: Optional[int] = None) -> Optional[int]:
-    raw = os.getenv(name)
-    if raw is None or raw.strip() == "":
-        return default
+    # Initialize provider to show runtime status
     try:
-        return int(raw)
-    except ValueError:
-        logger.warning("Environment variable %s=%r is not a valid integer", name, raw)
-        return default
-
-
-def build_hybrid_memory_from_env() -> MemoryConfig:
-    embedder_provider = os.getenv("HYBRID_EMBEDDER_PROVIDER", "openai")
-    embedder_model = os.getenv("HYBRID_EMBEDDER_MODEL", "text-embedding-3-small")
-    embedder_dims = _env_int("HYBRID_EMBEDDER_DIMS") or get_embedding_dimensions(
-        embedder_model
-    )
-    embedder_conf = {"model": embedder_model, "embedding_dims": embedder_dims}
-    embedder = EmbedderConfig(provider=embedder_provider, config=embedder_conf)
-
-    vector_path = os.getenv("HYBRID_VECTOR_PATH", ".praison/hybrid_chroma")
-    vector_collection = os.getenv("HYBRID_VECTOR_COLLECTION", "hybrid_memory")
-    vector_store = {
-        "provider": "chromadb",
-        "config": {
-            "path": vector_path,
-            "collection": vector_collection,
-        },
-    }
-
-    lexical: Dict[str, Any] = {
-        "db_path": os.getenv("HYBRID_LEXICAL_DB_PATH", ".praison/hybrid_lexical.db")
-    }
-    ttl_seconds = _env_int("HYBRID_LEXICAL_TTL_SECONDS")
-    if ttl_seconds is not None:
-        lexical["ttl_seconds"] = ttl_seconds
-    max_entries = _env_int("HYBRID_LEXICAL_MAX_ENTRIES")
-    if max_entries is not None:
-        lexical["max_entries"] = max_entries
-    cleanup_every = _env_int("HYBRID_LEXICAL_CLEANUP_INTERVAL")
-    if cleanup_every is not None:
-        lexical["cleanup_interval"] = cleanup_every
-
-    rerank_enabled = _env_bool("HYBRID_RERANK_ENABLED", True)
-    rerank_top_k = _env_int("HYBRID_RERANK_TOP_K", 10) or 10
-    rerank_workers = _env_int("HYBRID_RERANK_MAX_WORKERS", 1) or 1
-    rerank = {
-        "enabled": rerank_enabled,
-        "model": os.getenv(
-            "HYBRID_RERANK_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2"
-        ),
-        "top_k": rerank_top_k,
-        "max_workers": rerank_workers,
-    }
-
-    graph_uri = os.getenv("HYBRID_GRAPH_URI") or os.getenv("NEO4J_URL")
-    graph_user = os.getenv("HYBRID_GRAPH_USER") or os.getenv("NEO4J_USER")
-    graph_password = os.getenv("HYBRID_GRAPH_PASSWORD") or os.getenv("NEO4J_PASSWORD")
-    graph_flag = _env_bool("HYBRID_GRAPH_ENABLED")
-    graph_should_enable = (
-        graph_flag
-        if graph_flag is not None
-        else bool(graph_uri and graph_user and graph_password)
-    )
-    graph = {
-        "enabled": graph_should_enable,
-    }
-    if graph_should_enable:
-        graph.update(
-            {
-                "uri": graph_uri,
-                "user": graph_user,
-                "password": graph_password,
-            }
+        from orchestrator.core.config import (
+            MemoryConfig,
+            MemoryProvider,
+            EmbedderConfig,
         )
 
-    config = {
-        "vector_store": vector_store,
-        "lexical": lexical,
-        "rerank": rerank,
-        "graph": graph,
-    }
-
-    return MemoryConfig(
-        provider=MemoryProvider.HYBRID,
-        use_embedding=True,
-        config=config,
-        embedder=embedder,
-    )
-
-
-def build_mem0_memory_from_env() -> MemoryConfig:
-    graph_provider = os.getenv("MEM0_GRAPH_PROVIDER", "neo4j").lower()
-    graph_url = os.getenv("MEM0_GRAPH_URL") or os.getenv(
-        "NEO4J_URL", "bolt://localhost:7687"
-    )
-    graph_user = os.getenv("MEM0_GRAPH_USER") or os.getenv("NEO4J_USER", "neo4j")
-    graph_password = os.getenv("MEM0_GRAPH_PASSWORD") or os.getenv(
-        "NEO4J_PASSWORD", "password"
-    )
-
-    graph_store = {
-        "provider": graph_provider,
-        "config": {
-            "url": graph_url,
-            "username": graph_user,
-            "password": graph_password,
-        },
-    }
-
-    vector_store: Optional[Dict[str, Any]] = None
-    vector_provider = os.getenv("MEM0_VECTOR_PROVIDER", "").lower()
-    if vector_provider == "qdrant":
-        q_config: Dict[str, Any] = {
-            "host": os.getenv("QDRANT_HOST", "localhost"),
-            "port": _env_int("QDRANT_PORT", 6333) or 6333,
-            "collection_name": os.getenv("QDRANT_COLLECTION", "mem0_memory"),
-        }
-        if os.getenv("QDRANT_API_KEY"):
-            q_config["api_key"] = os.getenv("QDRANT_API_KEY")
-        if os.getenv("QDRANT_URL"):
-            q_config["url"] = os.getenv("QDRANT_URL")
-        if _env_bool("QDRANT_USE_HTTPS"):
-            q_config["https"] = True
-        vector_store = {"provider": "qdrant", "config": q_config}
-
-    embedder_provider = os.getenv("MEM0_EMBEDDER_PROVIDER", "openai")
-    embedder_model = os.getenv("MEM0_EMBEDDER_MODEL", "text-embedding-3-large")
-    embedder_conf = {
-        "model": embedder_model,
-        "embedding_dims": get_embedding_dimensions(embedder_model),
-    }
-    embedder = EmbedderConfig(provider=embedder_provider, config=embedder_conf)
-
-    llm_provider = os.getenv("MEM0_LLM_PROVIDER", "openai")
-    llm_model = os.getenv("MEM0_LLM_MODEL", "gpt-4o-mini")
-    llm = {
-        "provider": llm_provider,
-        "config": {"model": llm_model},
-    }
-
-    config: Dict[str, Any] = {
-        "graph_store": graph_store,
-        "llm": llm,
-        "embedder": {"provider": embedder.provider, "config": embedder.config},
-    }
-    if vector_store:
-        config["vector_store"] = vector_store
-
-    return MemoryConfig(
-        provider=MemoryProvider.MEM0,
-        use_embedding=True,
-        config=config,
-        embedder=embedder,
-    )
-
-
-def build_rag_memory_from_env() -> MemoryConfig:
-    embedder_provider = os.getenv("RAG_EMBEDDER_PROVIDER", "openai")
-    embedder_model = os.getenv("RAG_EMBEDDER_MODEL", "text-embedding-3-small")
-    embedder = EmbedderConfig(
-        provider=embedder_provider,
-        config={
-            "model": embedder_model,
-            "embedding_dims": get_embedding_dimensions(embedder_model),
-        },
-    )
-    short_db = os.getenv("RAG_SHORT_DB", ".praison/memory/short.db")
-    long_db = os.getenv("RAG_LONG_DB", ".praison/memory/long.db")
-    rag_db = os.getenv("RAG_VECTOR_PATH", ".praison/memory/chroma_db")
-    return MemoryConfig(
-        provider=MemoryProvider.RAG,
-        use_embedding=True,
-        config={},
-        short_db=short_db,
-        long_db=long_db,
-        rag_db_path=rag_db,
-        embedder=embedder,
-    )
-
-
-def resolve_memory_config(provider_name: Optional[str]) -> MemoryConfig:
-    provider = (provider_name or os.getenv("ORCH_MEMORY_PROVIDER", "hybrid")).lower()
-    if provider == MemoryProvider.HYBRID.value:
-        return build_hybrid_memory_from_env()
-    if provider == MemoryProvider.MEM0.value:
-        return build_mem0_memory_from_env()
-    if provider == MemoryProvider.RAG.value:
-        return build_rag_memory_from_env()
-    raise ValueError(f"Unsupported memory provider: {provider}")
-
-
-def _format_prompt_block(user_prompt: str, recall_items: Sequence[str]) -> str:
-    lines = [f"USER PROMPT: {user_prompt.strip()}"]
-    if recall_items:
-        lines.append("MEMORY RECALL CONTEXT:")
-        lines.extend(f"  • {item}" for item in recall_items)
-    return "\n".join(lines)
-
-
-def _conversation_metadata(
-    user_id: str,
-    run_id: str,
-    agent_id: str,
-    turn_index: int,
-    language: str,
-    document_id: str,
-    tags: Iterable[str],
-    title: str,
-) -> Dict[str, Any]:
-    metadata = default_conversation_metadata(
-        user_id, run_id, agent_id, content_hash=f"{agent_id}-{turn_index:04d}"
-    )
-    metadata.update(
-        {
-            "document_id": document_id,
-            "title": title,
-            "section": agent_id,
-            "order": turn_index,
-            "language": language,
-            "tags": list(tags),
-        }
-    )
-    return metadata
-
-
-def _build_recall_snippets(
-    manager: MemoryManager,
-    query: str,
-    *,
-    user_id: str,
-    run_id: str,
-    limit: int,
-) -> List[str]:
-    try:
-        results = manager.retrieve_filtered(
-            query,
-            limit=limit,
-            user_id=user_id,
-            run_id=run_id,
+        # Create proper config for provider
+        memory_config = MemoryConfig(
+            provider=MemoryProvider(provider_name), embedder=EmbedderConfig()
         )
-    except Exception:
-        results = manager.retrieve(query, limit=limit)
-    snippets: List[str] = []
-    seen: set[str] = set()
-    for item in results or []:
-        content = (item.get("content") or "").strip()
-        if not content:
-            continue
-        key = content.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        meta = item.get("metadata") or {}
-        src = meta.get("document_id") or meta.get("chunk_id") or item.get("id")
-        if src:
-            snippets.append(f"{content} [src: {src}]")
+
+        # Create manager and check health
+        manager = MemoryManager(config=memory_config)
+
+        if manager.health_check():
+            status_text = "[green]✓ Provider initialized successfully[/green]"
+
+            # Get provider info
+            provider_info = manager.get_provider_info()
+            status_text += (
+                f"\n[cyan]Provider:[/cyan] {provider_info.get('provider', 'Unknown')}"
+            )
+            status_text += f"\n[cyan]Status:[/cyan] {'Healthy' if provider_info.get('initialized') else 'Unhealthy'}"
         else:
-            snippets.append(content)
-    return snippets
+            status_text = (
+                "[yellow]⚠ Provider initialized but health check failed[/yellow]"
+            )
+
+    except Exception as e:
+        status_text = f"[red]✗ Provider initialization failed:[/red] {str(e)}"
+        logger.exception("Provider initialization failed in memory-info")
+
+    console.print(Panel(status_text, title="Provider Status", border_style="blue"))
+    return 0
 
 
-def _build_chat_agents() -> List[AgentConfig]:
-    router = AgentConfig(
-        name="Orchestrator",
-        role="Router & Coordinator",
-        goal="Seleccionar la ruta adecuada para cada petición de ingeniería",
-        backstory=(
-            "Ingeniero senior que decide si una consulta requiere respuesta rápida, investigación documentada, "
-            "análisis profundo, planificación táctico-operativa o verificación normativa."
+def _get_agent_template(agent_name: str) -> AgentConfig:
+    """Get predefined agent configuration template.
+
+    Args:
+        agent_name: Agent template name (case-insensitive)
+
+    Returns:
+        AgentConfig for the requested template
+
+    Raises:
+        ValueError: If agent_name is not a valid template
+    """
+    # Normalize to lowercase for case-insensitive lookup
+    agent_name_lower = agent_name.lower()
+
+    # Handle special case: StandardsAgent → standards
+    if agent_name_lower == "standardsagent":
+        agent_name_lower = "standards"
+
+    templates = {
+        "router": AgentConfig(
+            name="Router",
+            role="Query Analyzer & Decision Router",
+            goal="Analyze user queries and route to appropriate execution path",
+            backstory=(
+                "You are an intelligent routing agent that analyzes user queries and determines "
+                "the best execution strategy. You classify queries into: 'quick' for simple factual "
+                "questions, 'analysis' for complex research requiring multi-agent collaboration, "
+                "or 'planning' for strategic planning tasks requiring Tree-of-Thought reasoning."
+            ),
+            instructions=(
+                "1. Analyze the user query complexity, intent, and required capabilities\n"
+                "2. Use GraphRAG tool to search relevant context from memory\n"
+                "3. Determine optimal routing decision:\n"
+                "   - 'quick': Simple factual questions answerable with web search\n"
+                "   - 'analysis': Complex research requiring multi-agent workflows\n"
+                "   - 'planning': Strategic planning requiring ToT reasoning\n"
+                "4. Provide confidence score (High/Medium/Low) and clear rationale\n"
+                '5. Return decision as JSON: {"decision": "quick|analysis|planning", "confidence": "High|Medium|Low", "rationale": "explanation"}'
+            ),
+            tools=["graphrag"],
+            llm="gpt-4o-mini",
         ),
-        instructions=dedent(
-            """
-            Evalúa el prompt, revisa el contexto proporcionado y decide qué ruta activa:
-              - quick: saludos o respuestas triviales que sólo necesitan un recordatorio.
-              - research: búsqueda documental con evidencia citada usando graph_rag_lookup.
-              - analysis: razonamiento paso a paso combinando memoria + GraphRAG.
-              
-              - standards: dudas sobre normas, guías o cumplimiento regulatorio.
-            Devuelve JSON con las claves "response" y "decision" (quick|research|analysis|standards).
-            """
+        "researcher": AgentConfig(
+            name="Researcher",
+            role="Information Research Specialist",
+            goal="Gather comprehensive information from web sources and memory",
+            backstory=(
+                "You are a meticulous research specialist skilled at gathering information from "
+                "multiple sources. You combine web search with memory retrieval to provide "
+                "comprehensive, well-sourced answers."
+            ),
+            instructions=(
+                "1. Search GraphRAG memory for relevant historical context\n"
+                "2. Use web search (DuckDuckGo/Wikipedia) for current information\n"
+                "3. Synthesize findings into coherent response with sources\n"
+                "4. Highlight key insights and data points"
+            ),
+            tools=["graphrag", "duckduckgo", "wikipedia"],
+            llm="gpt-4o-mini",
         ),
-    )
-
-    quick = AgentConfig(
-        name="QuickResponder",
-        role="Short Response Agent",
-        goal="Dar respuestas breves usando sólo el contexto necesario",
-        backstory="Especialista en respuestas ágiles para interacciones cotidianas.",
-        instructions=dedent(
-            """
-            Responde en una o dos frases, citando memoria previa cuando aplique.
-            Si falta información, pide aclaraciones de forma cordial.
-            """
+        "analyst": AgentConfig(
+            name="Analyst",
+            role="Data Analysis & Insight Specialist",
+            goal="Analyze research findings and extract actionable insights",
+            backstory=(
+                "You are an analytical expert who excels at processing information and "
+                "identifying patterns, trends, and actionable insights."
+            ),
+            instructions=(
+                "1. Review research findings from previous agents\n"
+                "2. Query GraphRAG for relevant analytical context\n"
+                "3. Identify patterns, trends, and key insights\n"
+                "4. Provide structured analysis with recommendations"
+            ),
+            tools=["graphrag"],
+            llm="gpt-4o-mini",
         ),
-    )
-
-    researcher = AgentConfig(
-        name="Researcher",
-        role="Research Specialist",
-        goal="Recuperar evidencia documental actualizada",
-        backstory="Analista documental con enfoque en ingeniería multidisciplinar.",
-        instructions=dedent(
-            """
-            1. Llama primero a graph_rag_lookup(query=<pregunta>, top_k=5) y revisa los fragmentos.
-            2. Resume hallazgos con viñetas, incluyendo citas [document_id §sección].
-            3. Si faltan fuentes, explícitalo y sugiere cómo ampliarlas.
-            """
+        "planner": AgentConfig(
+            name="Planner",
+            role="Strategic Planning Specialist",
+            goal="Create actionable plans and strategies",
+            backstory=(
+                "You are a strategic planning expert who creates comprehensive, actionable "
+                "plans based on research and analysis."
+            ),
+            instructions=(
+                "1. Review all previous agent outputs\n"
+                "2. Query GraphRAG for relevant planning context\n"
+                "3. Create structured plan with clear steps\n"
+                "4. Include timeline, resources, and success metrics"
+            ),
+            tools=["graphrag"],
+            llm="gpt-4o-mini",
         ),
-    )
-
-    analyst = AgentConfig(
-        name="Analyst",
-        role="Analyst Agent",
-        goal="Producir análisis técnico argumentado",
-        backstory="Ingeniero de sistemas capaz de sintetizar hallazgos y riesgo.",
-        instructions=dedent(
-            """
-            Integra memoria + GraphRAG para elaborar explicación estructurada (contexto, evidencia, riesgos, recomendaciones).
-            Cita cada afirmación relevante con [document_id §sección] o marca claramente si es inferencia.
-            """
+        "standards": AgentConfig(
+            name="StandardsAgent",
+            role="Quality Assurance Specialist",
+            goal="Ensure response quality and completeness",
+            backstory=(
+                "You are a quality assurance expert who reviews outputs for accuracy, "
+                "completeness, and adherence to best practices."
+            ),
+            instructions=(
+                "1. Review final output for accuracy and completeness\n"
+                "2. Check against GraphRAG memory for consistency\n"
+                "3. Verify all claims are properly sourced\n"
+                "4. Ensure response meets quality standards"
+            ),
+            tools=["graphrag"],
+            llm="gpt-4o-mini",
         ),
-    )
+    }
 
-    standards = AgentConfig(
-        name="StandardsAgent",
-        role="Compliance & Standards Advisor",
-        goal="Responder sobre normativas y mejores prácticas",
-        backstory="Consultor especializado en normativas industriales y de seguridad.",
-        instructions=dedent(
-            """
-            Antes de responder, ejecuta graph_rag_lookup con tags adecuados (p.ej. "norma", "seguridad").
-            Resume el requisito, cita documentos y añade advertencias o comprobaciones necesarias.
-            """
-        ),
-    )
-
-    return [router, quick, researcher, analyst, standards]
-
-
-_AGENT_TEMPLATES = {cfg.name: cfg for cfg in _build_chat_agents()}
-
-
-PLAN_AGENT_NAMES = [
-    name for name in _AGENT_TEMPLATES if name not in {"Orchestrator", "QuickResponder"}
-]
-
-
-def _get_agent_template(name: str) -> AgentConfig:
-    try:
-        template = _AGENT_TEMPLATES[name]
-    except KeyError as exc:  # pragma: no cover - defensive
-        raise ValueError(f"Unknown agent template: {name}") from exc
-    return copy.deepcopy(template)
-
-
-def _parse_router_payload(raw: Optional[str]) -> Dict[str, Any]:
-    if not raw:
-        return {}
-    try:
-        return json.loads(raw)
-    except Exception:
-        return {}
-
-
-def _build_router_config(
-    *,
-    user_prompt: str,
-    recall_items: Sequence[str],
-    base_memory_config: MemoryConfig,
-    user_id: str,
-    verbose: int,
-    max_iter: int,
-) -> OrchestratorConfig:
-    memory_config = copy.deepcopy(base_memory_config)
-    agent = _get_agent_template("Orchestrator")
-    prompt_block = _format_prompt_block(user_prompt, recall_items)
-    description = (
-        dedent(
-            """
-        Evalúa el prompt del usuario y decide si basta una respuesta rápida (quick) o si se requiere planificación deliberada (research|analysis|standards).
-        {prompt_block}
-        Devuelve JSON con el formato:
-        {{
-          "response": "mensaje breve para el usuario",
-          "decision": "quick|research|analysis|standards",
-          "assignments": []
-        }}
-        No generes asignaciones ni planes; deja el arreglo assignments vacío.
-        """
+    if agent_name_lower not in templates:
+        available = ", ".join(sorted(templates.keys()))
+        raise ValueError(
+            f"Unknown agent template: '{agent_name}'. "
+            f"Available templates (case-insensitive): {available}"
         )
-        .format(prompt_block=prompt_block)
-        .strip()
-    )
 
-    router_task = TaskConfig(
-        name="route_selector",
-        description=description,
-        expected_output="JSON con response, decision y assignments (lista de agentes y objetivos específicos).",
-        agent_name="Orchestrator",
-        async_execution=False,
-        is_start=True,
-        task_type="decision",
-        condition={route: [] for route in ROUTE_OPTIONS},
-    )
-
-    exec_config = ExecutionConfig(
-        process=ProcessType.WORKFLOW,
-        verbose=2 if verbose >= 2 else 1,
-        max_iter=max_iter,
-        memory=True,
-        user_id=user_id,
-        async_execution=False,
-    )
-
-    return OrchestratorConfig(
-        name="CliRouter",
-        memory_config=memory_config,
-        execution_config=exec_config,
-        agents=[agent],
-        tasks=[router_task],
-        embedder=memory_config.embedder,
-        custom_config={},
-    )
+    return templates[agent_name_lower]
 
 
-def _build_route_config(
-    *,
-    agent_names: Sequence[str],
-    base_memory_config: MemoryConfig,
-    user_id: str,
-    verbose: int,
-    max_iter: int,
-) -> Optional[OrchestratorConfig]:
-    if not agent_names:
-        return None
+def _build_chat_agents(memory_manager: MemoryManager, use_tools: bool = True) -> tuple:
+    """Build standard chat agents with GraphRAG tool."""
+    from orchestrator.tools.graph_rag_tool import create_graph_rag_tool
 
-    memory_config = copy.deepcopy(base_memory_config)
-    agents = [_get_agent_template(name) for name in agent_names]
+    # Create GraphRAG tool
+    graphrag_tool = create_graph_rag_tool(memory_manager)
 
-    exec_config = ExecutionConfig(
-        process=ProcessType.WORKFLOW,
-        verbose=2 if verbose >= 2 else 1,
-        max_iter=max_iter,
-        memory=True,
-        user_id=user_id,
-        async_execution=False,
-    )
+    # Web search tools (optional)
+    web_tools = []
+    if use_tools and duckduckgo_tool:
+        web_tools.append(duckduckgo_tool)
+    if use_tools and wikipedia_tool:
+        web_tools.append(wikipedia_tool)
 
-    return OrchestratorConfig(
-        name="CliRoute::dynamic",
-        memory_config=memory_config,
-        execution_config=exec_config,
-        agents=agents,
-        tasks=[],
-        embedder=memory_config.embedder,
-        custom_config={},
+    # Get agent templates
+    router_config = _get_agent_template("router")
+    researcher_config = _get_agent_template("researcher")
+    analyst_config = _get_agent_template("analyst")
+    planner_config = _get_agent_template("planner")
+    standards_config = _get_agent_template("standards")
+
+    # Attach tools to agents
+    router_config.tools = [graphrag_tool]
+    researcher_config.tools = [graphrag_tool] + web_tools
+    analyst_config.tools = [graphrag_tool]
+    planner_config.tools = [graphrag_tool]
+    standards_config.tools = [graphrag_tool]
+
+    return (
+        router_config,
+        researcher_config,
+        analyst_config,
+        planner_config,
+        standards_config,
     )
 
 
-def _extract_text(output: Any) -> Optional[str]:
-    if output is None:
-        return None
-    if isinstance(output, str):
-        return output.strip() or None
-    if isinstance(output, dict):
-        for key in ("response", "content", "summary", "text"):
-            value = output.get(key)
-            if value:
-                return str(value).strip()
-        return json.dumps(output, ensure_ascii=False)
-    raw = getattr(output, "raw", None)
-    if raw:
-        return str(raw).strip()
-    json_dict = getattr(output, "json_dict", None)
-    if isinstance(json_dict, dict):
-        for key in ("response", "answer", "output"):
-            value = json_dict.get(key)
-            if value:
-                return str(value).strip()
-        return json.dumps(json_dict, ensure_ascii=False)
-    pydantic_obj = getattr(output, "pydantic", None)
-    if pydantic_obj is not None:
-        if hasattr(pydantic_obj, "response"):
-            value = getattr(pydantic_obj, "response")
-            if value:
-                return str(value).strip()
+def _parse_router_payload(text: str) -> Dict[str, Any]:
+    """
+    Extract decision payload from router output.
+    Supports JSON objects and markdown code blocks.
+    """
+    if not text:
+        return {}
+
+    # Try direct JSON parsing
+    try:
+        data = json.loads(text.strip())
+        if isinstance(data, dict):
+            return data
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Try extracting from markdown code block
+    import re
+
+    json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if json_match:
         try:
-            return pydantic_obj.model_dump_json()
-        except Exception:
-            return str(pydantic_obj)
-    if isinstance(output, Sequence):
-        for item in reversed(list(output)):
-            text = _extract_text(item)
-            if text:
-                return text
-    return None
+            data = json.loads(json_match.group(1))
+            if isinstance(data, dict):
+                return data
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # Try finding JSON object in text
+    json_obj_match = re.search(r'\{[^{}]*"decision"[^{}]*\}', text)
+    if json_obj_match:
+        try:
+            data = json.loads(json_obj_match.group(0))
+            if isinstance(data, dict):
+                return data
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # Fallback: extract decision keyword
+    decision_match = re.search(r'decision["\s:]+(\w+)', text, re.IGNORECASE)
+    if decision_match:
+        return {"decision": decision_match.group(1)}
+
+    return {}
+
+
+def _extract_text(output: Any) -> str:
+    """Extract text content from various output formats."""
+    if output is None:
+        return ""
+
+    # PRIORITY 1 FIX: Handle OrchestratorState with final_output field
+    if hasattr(output, "final_output") and output.final_output:
+        return str(output.final_output)
+
+    # Handle string output
+    if isinstance(output, str):
+        return output
+
+    # Handle dict with final_output
+    if isinstance(output, dict):
+        if "final_output" in output:
+            return str(output["final_output"])
+        # Try common text fields
+        for key in ["output", "text", "content", "response", "result"]:
+            if key in output:
+                return str(output[key])
+        # Fallback to messages
+        if "messages" in output:
+            messages = output["messages"]
+            if messages:
+                last_msg = messages[-1]
+                if isinstance(last_msg, dict):
+                    return last_msg.get("content", str(output))
+                elif hasattr(last_msg, "content"):
+                    return str(last_msg.content)
+        return str(output)
+
+    # Handle TaskOutput objects
+    if hasattr(output, "raw"):
+        return str(output.raw)
+    if hasattr(output, "content"):
+        return str(output.content)
+
+    return str(output)
 
 
 def _extract_decision(output: Any) -> Optional[str]:
+    """Extract routing decision from various output formats including StateGraph state."""
     if output is None:
         return None
+
+    # PHASE 1 FIX: Check StateGraph state object attributes first
+    if hasattr(output, "current_route"):
+        route = getattr(output, "current_route")
+        return str(route).strip() if route else None
+
+    # Check for router_decision attribute (alternative state field)
+    if hasattr(output, "router_decision"):
+        route = getattr(output, "router_decision")
+        return str(route).strip() if route else None
+
+    # PHASE 1 FIX: Check dict state (StateGraph can return dict or object)
     if isinstance(output, dict):
-        decision = output.get("decision")
-        return str(decision).strip() if decision else None
+        # StateGraph state as dict
+        if "current_route" in output:
+            return str(output["current_route"]).strip()
+        if "router_decision" in output:
+            return str(output["router_decision"]).strip()
+        # Legacy router payload
+        if "decision" in output:
+            return str(output["decision"]).strip()
+
+    # EXISTING CODE: Check other formats (json_dict, pydantic, raw JSON)
     json_dict = getattr(output, "json_dict", None)
     if isinstance(json_dict, dict) and json_dict.get("decision"):
         return str(json_dict["decision"]).strip()
+
     pydantic_obj = getattr(output, "pydantic", None)
     if pydantic_obj is not None and hasattr(pydantic_obj, "decision"):
         value = getattr(pydantic_obj, "decision")
         return str(value).strip() if value else None
+
     raw = getattr(output, "raw", None)
     if isinstance(raw, str) and "decision" in raw.lower():
         try:
@@ -595,340 +410,306 @@ def _extract_decision(output: Any) -> Optional[str]:
                 return str(data["decision"]).strip()
         except Exception:
             pass
+
     return None
 
 
-def _attach_graph_tool(
-    orchestrator: Orchestrator, *, user_id: str, run_id: str
-) -> None:
-    if not orchestrator.memory_manager:
-        return
-    tool = orchestrator.create_graph_tool(user_id=user_id, run_id=run_id)
-    for agent_name in ("Researcher", "Analyst", "StandardsAgent"):
-        agent = orchestrator.get_agent(agent_name)
-        if agent is None:
-            continue
-        if all(
-            getattr(t, "__name__", None) != getattr(tool, "__name__", None)
-            for t in getattr(agent, "tools", [])
-        ):
-            agent.tools.append(tool)
+# Graph tool attachment now handled by CLI adapter
 
 
 def run_chat(args: argparse.Namespace) -> int:
+    """Run interactive chat with the orchestrator."""
     _setup_logging(args.verbose)
+    console = Console()
+
+    # Initialize Rich display
+    rich_display = RichWorkflowDisplay()
+
+    # Welcome message
+    console.print(
+        Panel(
+            "[bold cyan]PraisonAI Multi-Agent Orchestrator[/bold cyan]\n"
+            f"Memory Provider: {args.memory_provider}\n"
+            f"Backend: {args.backend}\n"
+            "Type 'exit' or 'quit' to end the session.",
+            title="Welcome",
+            border_style="green",
+        )
+    )
+
+    # Initialize memory manager
     try:
-        base_memory_config = resolve_memory_config(args.memory_provider)
-    except Exception as exc:  # pragma: no cover - configuration errors
-        print(f"❌ Error construyendo configuración de memoria: {exc}")
+        from orchestrator.core.config import (
+            MemoryConfig,
+            MemoryProvider,
+            EmbedderConfig,
+        )
+
+        # Create memory configuration with proper config object pattern
+        memory_config = MemoryConfig(
+            provider=MemoryProvider(args.memory_provider.lower()),
+            use_embedding=True,
+            embedder=EmbedderConfig(
+                provider="openai", config={"model": "text-embedding-3-large"}
+            ),
+            config={},
+        )
+
+        memory_manager = MemoryManager(config=memory_config)
+        console.print("[green]✓ Memory provider initialized[/green]")
+    except Exception as e:
+        console.print(f"[red]✗ Failed to initialize memory: {str(e)}[/red]")
+        logger.exception("Memory initialization failed")
         return 1
 
-    memory_manager = MemoryManager(copy.deepcopy(base_memory_config))
-    provider_label = base_memory_config.provider.value
-    print(
-        f"✅ Memory manager initialized for user: {args.user} (provider={provider_label})"
-    )
-    document_id = args.session_document or f"cli-session::{args.run}"
-    turn_index = 0
+    # Build agents
+    try:
+        (
+            router_config,
+            researcher_config,
+            analyst_config,
+            planner_config,
+            standards_config,
+        ) = _build_chat_agents(memory_manager, use_tools=True)
+        console.print("[green]✓ Agent configurations ready[/green]\n")
+    except Exception as e:
+        console.print(f"[red]✗ Failed to build agents: {str(e)}[/red]")
+        return 1
 
+    # Prepare backend adapter
+    if args.backend == "langgraph":
+        adapter = GraphAgentAdapter(
+            memory_manager=memory_manager,
+            llm=args.llm,
+            enable_parallel=True,
+        )
+        console.print("[cyan]Using LangGraph backend with parallel execution[/cyan]\n")
+    elif args.backend == "praisonai":
+        adapter = GraphAgentAdapter(
+            memory_manager=memory_manager,
+            llm=args.llm,
+            enable_parallel=False,
+        )
+        console.print(
+            "[cyan]Using PraisonAI backend with sequential execution[/cyan]\n"
+        )
+    else:
+        console.print(f"[red]Unknown backend: {args.backend}[/red]")
+        return 1
+
+    # Chat loop
     while True:
         try:
-            prompt = input("» ").strip()
-        except EOFError:
-            print()
-            break
-        except KeyboardInterrupt:
-            print()
-            break
-        if not prompt:
-            continue
-        if prompt.lower() in {"exit", "quit"}:
-            break
+            # Get user input
+            user_query = console.input("\n[bold blue]You:[/bold blue] ").strip()
 
-        user_meta = _conversation_metadata(
-            args.user,
-            args.run,
-            agent_id="user",
-            turn_index=turn_index,
-            language=args.language,
-            document_id=document_id,
-            tags=["chat", "user"],
-            title=DEFAULT_SESSION_TITLE,
-        )
-        memory_manager.store(prompt, user_meta)
-        turn_index += 1
+            if not user_query:
+                continue
 
-        recall_items = _build_recall_snippets(
-            memory_manager,
-            prompt,
-            user_id=args.user,
-            run_id=args.run,
-            limit=args.recall_top_k,
-        )
+            if user_query.lower() in ["exit", "quit"]:
+                console.print("[yellow]Goodbye![/yellow]")
+                break
 
-        router_config = _build_router_config(
-            user_prompt=prompt,
-            recall_items=recall_items,
-            base_memory_config=base_memory_config,
-            user_id=args.user,
-            verbose=args.verbose,
-            max_iter=args.max_iter,
-        )
+            # Clear previous workflow display
+            rich_display.clear()
 
-        router = Orchestrator(router_config)
-        try:
-            router_result = router.run_sync()
-        except WorkflowError as exc:
-            logger.warning("Router workflow failed: %s", exc)
-            print(
-                "⚠️  Modelo no disponible temporalmente; respondiendo de forma básica."
-            )
-            final_text = "Estoy teniendo problemas temporales con el LLM. ¿Puedes intentarlo de nuevo en unos segundos?"
-            assistant_meta = _conversation_metadata(
-                args.user,
-                args.run,
-                agent_id="assistant",
-                turn_index=turn_index,
-                language=args.language,
-                document_id=document_id,
-                tags=["chat", "assistant"],
-                title=DEFAULT_SESSION_TITLE,
-            )
-            assistant_meta["route"] = "quick"
-            memory_manager.store(final_text, assistant_meta)
-            turn_index += 1
-            if router.memory_manager:
-                router.memory_manager.cleanup()
-            continue
-
-        router_raw_text = _extract_text(router_result)
-        payload = _parse_router_payload(router_raw_text)
-
-        decision = payload.get("decision")
-        if (
-            not decision
-            and router.workflow_engine
-            and "route_selector" in router.workflow_engine.executions
-        ):
-            router_exec = router.workflow_engine.executions["route_selector"]
-            decision = _extract_decision(router_exec.result)
-        if not decision:
-            decision = _extract_decision(router_result)
-        decision = (decision or "quick").lower()
-
-        assignments = (
-            payload.get("assignments")
-            if isinstance(payload.get("assignments"), list)
-            else []
-        )
-        agent_sequence = [
-            item.get("agent")
-            for item in assignments
-            if isinstance(item, dict) and item.get("agent")
-        ]
-
-        final_text = payload.get("response") or router_raw_text
-
-        if decision != "quick":
-            agent_catalog = [_get_agent_template(name) for name in PLAN_AGENT_NAMES]
-
-            if not assignments:
-                catalog_names = [agent.name for agent in agent_catalog]
-                logger.info(
-                    "Router decision=%s returned no assignments; invoking ToT planner with agents=%s",
-                    decision,
-                    ", ".join(catalog_names),
+            # === ROUTER PHASE ===
+            try:
+                router_result = adapter.run_single_agent(
+                    agent_config=router_config,
+                    user_query=user_query,
                 )
-                try:
-                    tot_output = generate_plan_with_tot(
-                        prompt,
-                        recall_items,
-                        agent_catalog,
-                        settings=PlanningSettings(
-                            backend=TOT_DEFAULT_BACKEND,
-                            max_steps=max(len(PLAN_AGENT_NAMES), 3),
-                        ),
-                        memory_config=base_memory_config,
-                    )
-                    assignments = tot_output.get("assignments", [])
-                    agent_sequence = [
-                        item.get("agent") for item in assignments if item.get("agent")
-                    ]
-                    usage = tot_output.get("metadata", {}).get("tot_usage", {})
-                    logger.info(
-                        "ToT planner generated %d assignments (tokens=%s)",
-                        len(assignments),
-                        usage.get("completion_tokens", "-"),
-                    )
-                    for idx, assignment in enumerate(assignments, start=1):
-                        logger.info(
-                            "ToT assignment %d: agent=%s objective=%s deliverable=%s",
-                            idx,
-                            assignment.get("agent"),
-                            assignment.get("objective"),
-                            assignment.get("expected_output"),
-                        )
-                except Exception:
-                    logger.exception(
-                        "Tree-of-Thought planning failed while generating assignments"
-                    )
+            except Exception as e:
+                console.print(f"[red]✗ Router execution failed: {str(e)}[/red]")
+                logger.exception("Router execution error")
+                continue
 
-            agent_sequence = [
-                name for name in agent_sequence if name in PLAN_AGENT_NAMES
-            ]
-            # preserve order but remove duplicates
-            assignments = [
-                item for item in assignments if item.get("agent") in agent_sequence
-            ]
+            # Extract decision from router result
+            router_raw_text = _extract_text(router_result)
+            payload = _parse_router_payload(router_raw_text)
 
-            if not agent_sequence:
-                logger.info(
-                    "No valid agents assigned, defaulting to first two planning agents"
+            decision = payload.get("decision")
+            if not decision:
+                decision = _extract_decision(router_result)
+
+            # PHASE 2 FIX: Replace silent fallback with logged fallback
+            if not decision:
+                logger.error(
+                    "Router decision extraction failed - no decision found in result"
                 )
-                agent_sequence = PLAN_AGENT_NAMES[:2]
-
-            route_config = _build_route_config(
-                agent_names=agent_sequence,
-                base_memory_config=base_memory_config,
-                user_id=args.user,
-                verbose=args.verbose,
-                max_iter=args.max_iter,
-            )
-
-            if route_config and agent_sequence:
-                route_orchestrator = Orchestrator(route_config)
-                try:
-                    route_orchestrator.plan_from_prompt(
-                        prompt,
-                        agent_sequence,
-                        recall_snippets=recall_items,
-                        assignments=assignments,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "Dynamic planning failed for route %s: %s", decision, exc
-                    )
-                    decision = "quick"
-                else:
-                    _attach_graph_tool(
-                        route_orchestrator, user_id=args.user, run_id=args.run
-                    )
-                    try:
-                        route_result = route_orchestrator.run_sync()
-                        final_text = _extract_text(route_result) or final_text
-                    except WorkflowError as exc:
-                        logger.warning("Route %s failed: %s", decision, exc)
-                        print(
-                            "⚠️  El modelo devolvió un error 503; enviando una respuesta corta."
-                        )
-                        decision = "quick"
-                    finally:
-                        if route_orchestrator.memory_manager:
-                            route_orchestrator.memory_manager.cleanup()
+                logger.debug(
+                    f"Router result type: {type(router_result)}, content: {router_result}"
+                )
+                decision = "quick"  # Explicit fallback with logging
             else:
-                decision = "quick"
+                decision = decision.lower()
 
-        if router.memory_manager:
-            router.memory_manager.cleanup()
+            # Emit router decision event and show Rich display
+            confidence = payload.get("confidence", "Medium")
+            rationale = payload.get("rationale", "Router analysis completed")
+            latency = payload.get("latency", 0)
+            if rich_display:
+                emit_router_decision(
+                    decision=decision,
+                    confidence=confidence,
+                    rationale=rationale,
+                    latency=latency,
+                )
 
-        if final_text:
-            assistant_meta = _conversation_metadata(
-                args.user,
-                args.run,
-                agent_id="assistant",
-                turn_index=turn_index,
-                language=args.language,
-                document_id=document_id,
-                tags=["chat", "assistant"],
-                title=DEFAULT_SESSION_TITLE,
-            )
-            assistant_meta["route"] = decision
-            memory_manager.store(final_text, assistant_meta)
-            turn_index += 1
+            # === EXECUTION PHASE ===
+            final_answer = None
 
-    memory_manager.cleanup()
+            if decision == "quick":
+                # Quick path: Single researcher agent
+                if rich_display:
+                    emit_agent_start("Researcher", "Gathering information")
+
+                try:
+                    researcher_result = adapter.run_single_agent(
+                        agent_config=researcher_config,
+                        user_query=user_query,
+                    )
+                    final_answer = _extract_text(researcher_result)
+
+                    if rich_display:
+                        emit_agent_complete("Researcher", "Research completed")
+                except Exception as e:
+                    console.print(f"[red]✗ Researcher execution failed: {str(e)}[/red]")
+                    logger.exception("Researcher execution error")
+                    continue
+
+            elif decision == "analysis":
+                # Analysis path: Multi-agent workflow
+                agent_sequence = ["Researcher", "Analyst", "StandardsAgent"]
+
+                try:
+                    workflow_result = adapter.run_multi_agent_workflow(
+                        agent_sequence=agent_sequence,
+                        user_query=user_query,
+                        rich_display=rich_display,
+                    )
+                    final_answer = _extract_text(workflow_result)
+                except Exception as e:
+                    console.print(f"[red]✗ Multi-agent workflow failed: {str(e)}[/red]")
+                    logger.exception("Multi-agent workflow error")
+                    continue
+
+            elif decision == "planning":
+                # Planning path: ToT planner + multi-agent
+                console.print(
+                    "[yellow]⚠ Planning path with ToT is not yet implemented[/yellow]"
+                )
+
+                # Fallback to analysis path
+                agent_sequence = ["Researcher", "Analyst", "Planner", "StandardsAgent"]
+
+                try:
+                    workflow_result = adapter.run_multi_agent_workflow(
+                        agent_sequence=agent_sequence,
+                        user_query=user_query,
+                        rich_display=rich_display,
+                    )
+                    final_answer = _extract_text(workflow_result)
+                except Exception as e:
+                    console.print(f"[red]✗ Planning workflow failed: {str(e)}[/red]")
+                    logger.exception("Planning workflow error")
+                    continue
+
+            else:
+                console.print(f"[red]✗ Unknown decision: {decision}[/red]")
+                continue
+
+            # Display final answer
+            if final_answer:
+                if rich_display:
+                    emit_final_answer(final_answer)
+                else:
+                    console.print("\n" + "=" * 80)
+                    console.print(
+                        Panel(
+                            Markdown(final_answer),
+                            title="Final Answer",
+                            border_style="green",
+                        )
+                    )
+                    console.print("=" * 80)
+            else:
+                console.print("[yellow]⚠ No answer generated[/yellow]")
+
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Interrupted by user[/yellow]")
+            break
+        except Exception as e:
+            console.print(f"[red]✗ Unexpected error: {str(e)}[/red]")
+            logger.exception("Unexpected error in chat loop")
+            continue
+
     return 0
 
 
-def run_mock_info(args: argparse.Namespace) -> int:
-    _setup_logging(args.verbose)
-    config = create_mock_engineering_config()
-    orchestrator = Orchestrator(config)
-    info = orchestrator.get_system_info()
-    print(json.dumps(info, indent=2, ensure_ascii=False))
-    return 0
+def main() -> int:
+    """Main entry point for CLI."""
+    # Load environment variables from .env file
+    load_dotenv()
 
-
-def run_memory_info(args: argparse.Namespace) -> int:
-    _setup_logging(args.verbose)
-    try:
-        memory_config = resolve_memory_config(args.memory_provider)
-    except Exception as exc:
-        print(f"❌ Error construyendo configuración de memoria: {exc}")
-        return 1
-    payload = asdict(memory_config)
-    payload["provider"] = memory_config.provider.value
-    print(json.dumps(payload, indent=2, ensure_ascii=False))
-    return 0
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Orchestrator CLI")
-    subparsers = parser.add_subparsers(dest="command")
-
-    chat = subparsers.add_parser(
-        "chat", help="Inicia un chat multiagente desde la terminal"
+    parser = argparse.ArgumentParser(
+        description="PraisonAI Multi-Agent Orchestrator CLI",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    chat.add_argument(
+
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
+    # Chat command
+    chat_parser = subparsers.add_parser("chat", help="Start interactive chat")
+    chat_parser.add_argument(
         "--memory-provider",
-        choices=[p.value for p in MemoryProvider],
+        type=str,
         default=os.getenv("ORCH_MEMORY_PROVIDER", "hybrid"),
+        choices=["hybrid", "mem0", "rag"],
+        help="Memory provider to use (default: hybrid)",
     )
-    chat.add_argument("--user", default=os.getenv("ORCH_USER", "cli-user"))
-    chat.add_argument("--run", default=os.getenv("ORCH_RUN", "cli-run"))
-    chat.add_argument("--language", default=os.getenv("ORCH_LANGUAGE", "es"))
-    chat.add_argument("--session-document", default=os.getenv("ORCH_SESSION_DOCUMENT"))
-    chat.add_argument("--max-iter", type=int, default=_env_int("ORCH_MAX_ITER", 6) or 6)
-    chat.add_argument("--verbose", type=int, default=_env_int("ORCH_VERBOSE", 2) or 2)
-    chat.add_argument(
-        "--recall-top-k", type=int, default=_env_int("ORCH_RECALL_TOP_K", 10) or 10
+    chat_parser.add_argument(
+        "--backend",
+        type=str,
+        default="langgraph",
+        choices=["langgraph", "praisonai"],
+        help="Agent backend to use (default: langgraph)",
     )
-    chat.set_defaults(func=run_chat)
+    chat_parser.add_argument(
+        "--llm",
+        type=str,
+        default="gpt-4o-mini",
+        help="LLM model to use (default: gpt-4o-mini)",
+    )
+    chat_parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable verbose logging",
+    )
 
-    mock = subparsers.add_parser(
-        "mock-info", help="Imprime información del orquestador mock de ingeniería"
-    )
-    mock.add_argument("--verbose", type=int, default=1)
-    mock.set_defaults(func=run_mock_info)
-
-    mem = subparsers.add_parser(
-        "memory-info", help="Muestra la configuración de memoria resultante"
-    )
-    mem.add_argument(
+    # Memory info command
+    info_parser = subparsers.add_parser("memory-info", help="Show memory configuration")
+    info_parser.add_argument(
         "--memory-provider",
-        choices=[p.value for p in MemoryProvider],
+        type=str,
         default=os.getenv("ORCH_MEMORY_PROVIDER", "hybrid"),
+        choices=["hybrid", "mem0", "rag"],
+        help="Memory provider to inspect (default: hybrid)",
     )
-    mem.add_argument("--verbose", type=int, default=1)
-    mem.set_defaults(func=run_memory_info)
 
-    return parser
+    args = parser.parse_args()
 
-
-def main(argv: Optional[List[str]] = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-    if not hasattr(args, "func"):
+    if not args.command:
         parser.print_help()
         return 1
-    try:
-        return args.func(args)
-    except KeyboardInterrupt:
-        print()
-        return 130
-    except Exception as exc:  # pragma: no cover - defensive fallback
-        logger.exception("CLI execution failed")
-        print(f"❌ CLI execution failed: {exc}")
+
+    if args.command == "chat":
+        return run_chat(args)
+    elif args.command == "memory-info":
+        return _show_memory_info(args)
+    else:
+        parser.print_help()
         return 1
 
 

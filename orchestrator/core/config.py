@@ -5,7 +5,7 @@ Configuration management for the orchestrator system.
 import os
 import yaml
 import json
-from typing import Dict, Any, Optional, List, Union
+from typing import Dict, Any, Optional, List, Union, Callable
 from pathlib import Path
 from dataclasses import dataclass, field
 from enum import Enum
@@ -14,18 +14,18 @@ from .exceptions import ConfigurationError, ValidationError
 
 
 class MemoryProvider(str, Enum):
-    """Supported memory providers."""
-    RAG = "rag"
-    MONGODB = "mongodb"
-    MEM0 = "mem0"
+    """Enum for supported memory providers."""
     HYBRID = "hybrid"
+    RAG = "rag"
+    MEM0 = "mem0"
 
 
 class ProcessType(str, Enum):
-    """Supported process types."""
+    """Enum for process execution types."""
     WORKFLOW = "workflow"
     SEQUENTIAL = "sequential"
     HIERARCHICAL = "hierarchical"
+    PARALLEL = "parallel"
 
 
 @dataclass
@@ -38,24 +38,27 @@ class EmbedderConfig:
 @dataclass
 class MemoryConfig:
     """Configuration for memory management."""
-    provider: MemoryProvider = MemoryProvider.RAG
+    provider: MemoryProvider = MemoryProvider.HYBRID
     use_embedding: bool = True
-    config: Dict[str, Any] = field(default_factory=dict)
-    short_db: Optional[str] = None
-    long_db: Optional[str] = None
-    rag_db_path: Optional[str] = None
     embedder: Optional[EmbedderConfig] = None
+    config: Dict[str, Any] = field(default_factory=dict)
+
+    # Provider-specific paths
+    hybrid_vector_path: Optional[str] = None
+    hybrid_lexical_db_path: Optional[str] = None
+    rag_db_path: Optional[str] = None
 
     def __post_init__(self):
-        """Set default paths if not provided."""
+        """Initialize default paths and embedder."""
         if self.embedder is None:
             self.embedder = EmbedderConfig()
-        
-        if self.provider == MemoryProvider.RAG:
-            if not self.short_db:
-                self.short_db = ".praison/memory/short.db"
-            if not self.long_db:
-                self.long_db = ".praison/memory/long.db"
+
+        if self.provider == MemoryProvider.HYBRID:
+            if not self.hybrid_vector_path:
+                self.hybrid_vector_path = ".praison/hybrid_chroma"
+            if not self.hybrid_lexical_db_path:
+                self.hybrid_lexical_db_path = ".praison/hybrid_lexical.db"
+        elif self.provider == MemoryProvider.RAG:
             if not self.rag_db_path:
                 self.rag_db_path = ".praison/memory/chroma_db"
 
@@ -68,8 +71,9 @@ class AgentConfig:
     goal: str
     backstory: str
     instructions: str
-    tools: List[str] = field(default_factory=list)
+    tools: Union[List[str], List[Callable]] = field(default_factory=list)  # PRIORITY 3 FIX: Support both strings and callables
     enabled: bool = True
+    llm: Optional[str] = None  # LLM model identifier (e.g., "gpt-4o-mini")
 
 
 @dataclass
@@ -78,309 +82,149 @@ class TaskConfig:
     name: str
     description: str
     expected_output: str
-    agent_name: str
-    async_execution: bool = False
-    is_start: bool = False
+    agent: str
     context: List[str] = field(default_factory=list)
-    next_tasks: List[str] = field(default_factory=list)
-    task_type: str = "normal"
-    condition: Optional[Dict[str, Any]] = None
+    enabled: bool = True
+    # Workflow engine fields
+    agent_name: Optional[str] = None  # Agent name (alias for agent)
+    async_execution: bool = False  # Execute task asynchronously
+    is_start: bool = False  # Mark as workflow start task
+    next_tasks: List[str] = field(default_factory=list)  # List of dependent tasks
+    task_type: str = "standard"  # Task type (standard, decision, etc.)
+    condition: Optional[Dict[str, List[str]]] = None  # Conditional routing for decision tasks
 
-
-@dataclass
-class ExecutionConfig:
-    """Configuration for execution parameters."""
-    process: ProcessType = ProcessType.WORKFLOW
-    verbose: int = 1
-    max_iter: int = 8
-    memory: bool = True
-    user_id: str = "default-user"
-    async_execution: bool = True
+    def __post_init__(self):
+        """Initialize agent_name from agent if not provided."""
+        if self.agent_name is None:
+            self.agent_name = self.agent
 
 
 @dataclass
 class OrchestratorConfig:
-    """Main configuration class for the orchestrator system."""
-    name: str = "DefaultOrchestrator"
-    memory_config: MemoryConfig = field(default_factory=MemoryConfig)
-    execution_config: ExecutionConfig = field(default_factory=ExecutionConfig)
+    """Main orchestrator configuration."""
+    name: str
+    process: str = "sequential"
     agents: List[AgentConfig] = field(default_factory=list)
     tasks: List[TaskConfig] = field(default_factory=list)
-    embedder: Optional[EmbedderConfig] = None
-    custom_config: Dict[str, Any] = field(default_factory=dict)
+    memory: Optional[MemoryConfig] = None
+    verbose: int = 1  # Verbosity level (0=quiet, 1=normal, 2=debug)
+    max_iter: int = 25  # Maximum iterations for agent execution
+    user_id: str = "default_user"  # User ID for session tracking
+    run_id: Optional[str] = None  # Run ID for execution tracking
+    async_execution: bool = False  # Enable asynchronous execution
 
     def __post_init__(self):
-        """Validate configuration after initialization."""
-        if self.embedder is None:
-            self.embedder = EmbedderConfig()
-        self.validate()
-
-    def validate(self) -> None:
-        """Validate the configuration."""
-        try:
-            # Validate agent names are unique
-            agent_names = [agent.name for agent in self.agents]
-            if len(agent_names) != len(set(agent_names)):
-                raise ValidationError("Agent names must be unique")
-            
-            # Validate task names are unique
-            task_names = [task.name for task in self.tasks]
-            if len(task_names) != len(set(task_names)):
-                raise ValidationError("Task names must be unique")
-            
-            # Validate task references
-            for task in self.tasks:
-                # Check agent exists
-                if task.agent_name not in agent_names:
-                    raise ValidationError(f"Task '{task.name}' references non-existent agent '{task.agent_name}'")
-                
-                # Check context tasks exist
-                for context_task in task.context:
-                    if context_task not in task_names:
-                        raise ValidationError(f"Task '{task.name}' references non-existent context task '{context_task}'")
-                
-                # Check next tasks exist
-                for next_task in task.next_tasks:
-                    if next_task not in task_names:
-                        raise ValidationError(f"Task '{task.name}' references non-existent next task '{next_task}'")
-            
-            # Validate memory configuration
-            self._validate_memory_config()
-            
-        except Exception as e:
-            raise ValidationError(f"Configuration validation failed: {str(e)}")
-
-    def _validate_memory_config(self) -> None:
-        """Validate memory configuration."""
-        if self.memory_config.provider == MemoryProvider.MONGODB:
-            if not self.memory_config.config.get("connection_string"):
-                raise ValidationError("MongoDB provider requires connection_string in config")
-        
-        elif self.memory_config.provider == MemoryProvider.MEM0:
-            if not self.memory_config.config.get("graph_store"):
-                raise ValidationError("Mem0 provider requires graph_store configuration")
-
-        elif self.memory_config.provider == MemoryProvider.HYBRID:
-            cfg = self.memory_config.config or {}
-            if not cfg.get("vector_store"):
-                raise ValidationError("Hybrid provider requires vector_store configuration")
-            if not cfg.get("lexical"):
-                raise ValidationError("Hybrid provider requires lexical configuration")
+        """Initialize default memory config if not provided."""
+        if self.memory is None:
+            self.memory = MemoryConfig()
 
     @classmethod
-    def from_dict(cls, config_dict: Dict[str, Any]) -> "OrchestratorConfig":
+    def from_yaml(cls, yaml_path: Union[str, Path]) -> 'OrchestratorConfig':
+        """Load configuration from YAML file."""
+        yaml_path = Path(yaml_path)
+
+        if not yaml_path.exists():
+            raise ConfigurationError(f"Configuration file not found: {yaml_path}")
+
+        try:
+            with open(yaml_path, 'r') as f:
+                data = yaml.safe_load(f)
+
+            if not data:
+                raise ConfigurationError("Empty configuration file")
+
+            return cls.from_dict(data)
+        except yaml.YAMLError as e:
+            raise ConfigurationError(f"Invalid YAML format: {str(e)}")
+        except Exception as e:
+            raise ConfigurationError(f"Error loading configuration: {str(e)}")
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'OrchestratorConfig':
         """Create configuration from dictionary."""
         try:
-            # Convert memory config
-            memory_config_dict = config_dict.get("memory_config", {})
-            memory_config = MemoryConfig(
-                provider=MemoryProvider(memory_config_dict.get("provider", "rag")),
-                use_embedding=memory_config_dict.get("use_embedding", True),
-                config=memory_config_dict.get("config", {}),
-                short_db=memory_config_dict.get("short_db"),
-                long_db=memory_config_dict.get("long_db"),
-                rag_db_path=memory_config_dict.get("rag_db_path"),
-                embedder=EmbedderConfig(**memory_config_dict.get("embedder", {}))
-            )
+            # Parse agents
+            agents = []
+            for agent_data in data.get('agents', []):
+                agents.append(AgentConfig(**agent_data))
 
-            # Convert execution config
-            exec_config_dict = config_dict.get("execution_config", {})
-            execution_config = ExecutionConfig(
-                process=ProcessType(exec_config_dict.get("process", "workflow")),
-                verbose=exec_config_dict.get("verbose", 1),
-                max_iter=exec_config_dict.get("max_iter", 8),
-                memory=exec_config_dict.get("memory", True),
-                user_id=exec_config_dict.get("user_id", "default-user"),
-                async_execution=exec_config_dict.get("async_execution", True)
-            )
+            # Parse tasks
+            tasks = []
+            for task_data in data.get('tasks', []):
+                tasks.append(TaskConfig(**task_data))
 
-            # Convert agents
-            agents = [AgentConfig(**agent_dict) for agent_dict in config_dict.get("agents", [])]
+            # Parse memory config
+            memory = None
+            if 'memory' in data:
+                memory_data = data['memory']
+                provider = MemoryProvider(memory_data.get('provider', 'hybrid'))
+                embedder = None
+                if 'embedder' in memory_data:
+                    embedder = EmbedderConfig(**memory_data['embedder'])
 
-            # Convert tasks
-            tasks = [TaskConfig(**task_dict) for task_dict in config_dict.get("tasks", [])]
-
-            # Convert embedder
-            embedder_dict = config_dict.get("embedder", {})
-            embedder = EmbedderConfig(**embedder_dict) if embedder_dict else None
+                memory = MemoryConfig(
+                    provider=provider,
+                    use_embedding=memory_data.get('use_embedding', True),
+                    embedder=embedder,
+                    config=memory_data.get('config', {})
+                )
 
             return cls(
-                name=config_dict.get("name", "DefaultOrchestrator"),
-                memory_config=memory_config,
-                execution_config=execution_config,
+                name=data.get('name', 'orchestrator'),
+                process=data.get('process', 'sequential'),
                 agents=agents,
                 tasks=tasks,
-                embedder=embedder,
-                custom_config=config_dict.get("custom_config", {})
+                memory=memory,
+                verbose=data.get('verbose', False)
             )
         except Exception as e:
-            raise ConfigurationError(f"Failed to create configuration from dict: {str(e)}")
-
-    @classmethod
-    def from_file(cls, file_path: Union[str, Path]) -> "OrchestratorConfig":
-        """Load configuration from file (YAML or JSON)."""
-        file_path = Path(file_path)
-        
-        if not file_path.exists():
-            raise ConfigurationError(f"Configuration file not found: {file_path}")
-        
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                if file_path.suffix.lower() in ['.yaml', '.yml']:
-                    config_dict = yaml.safe_load(f)
-                elif file_path.suffix.lower() == '.json':
-                    config_dict = json.load(f)
-                else:
-                    raise ConfigurationError(f"Unsupported file format: {file_path.suffix}")
-            
-            return cls.from_dict(config_dict)
-        except Exception as e:
-            raise ConfigurationError(f"Failed to load configuration from {file_path}: {str(e)}")
-
-    @classmethod
-    def from_env(cls, prefix: str = "ORCHESTRATOR_") -> "OrchestratorConfig":
-        """Load configuration from environment variables."""
-        config_dict = {}
-        
-        # Basic configuration
-        if os.getenv(f"{prefix}NAME"):
-            config_dict["name"] = os.getenv(f"{prefix}NAME")
-        
-        # Memory configuration
-        memory_config = {}
-        if os.getenv(f"{prefix}MEMORY_PROVIDER"):
-            memory_config["provider"] = os.getenv(f"{prefix}MEMORY_PROVIDER")
-        if os.getenv(f"{prefix}MEMORY_USE_EMBEDDING"):
-            memory_config["use_embedding"] = os.getenv(f"{prefix}MEMORY_USE_EMBEDDING").lower() == "true"
-        
-        if memory_config:
-            config_dict["memory_config"] = memory_config
-        
-        # Execution configuration
-        exec_config = {}
-        if os.getenv(f"{prefix}PROCESS"):
-            exec_config["process"] = os.getenv(f"{prefix}PROCESS")
-        if os.getenv(f"{prefix}VERBOSE"):
-            exec_config["verbose"] = int(os.getenv(f"{prefix}VERBOSE"))
-        if os.getenv(f"{prefix}MAX_ITER"):
-            exec_config["max_iter"] = int(os.getenv(f"{prefix}MAX_ITER"))
-        if os.getenv(f"{prefix}USER_ID"):
-            exec_config["user_id"] = os.getenv(f"{prefix}USER_ID")
-        
-        if exec_config:
-            config_dict["execution_config"] = exec_config
-        
-        return cls.from_dict(config_dict)
+            raise ConfigurationError(f"Error parsing configuration: {str(e)}")
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert configuration to dictionary."""
         return {
-            "name": self.name,
-            "memory_config": {
-                "provider": self.memory_config.provider.value,
-                "use_embedding": self.memory_config.use_embedding,
-                "config": self.memory_config.config,
-                "short_db": self.memory_config.short_db,
-                "long_db": self.memory_config.long_db,
-                "rag_db_path": self.memory_config.rag_db_path,
-                "embedder": {
-                    "provider": self.memory_config.embedder.provider,
-                    "config": self.memory_config.embedder.config
-                }
-            },
-            "execution_config": {
-                "process": self.execution_config.process.value,
-                "verbose": self.execution_config.verbose,
-                "max_iter": self.execution_config.max_iter,
-                "memory": self.execution_config.memory,
-                "user_id": self.execution_config.user_id,
-                "async_execution": self.execution_config.async_execution
-            },
-            "agents": [
-                {
-                    "name": agent.name,
-                    "role": agent.role,
-                    "goal": agent.goal,
-                    "backstory": agent.backstory,
-                    "instructions": agent.instructions,
-                    "tools": agent.tools,
-                    "enabled": agent.enabled
-                }
-                for agent in self.agents
-            ],
-            "tasks": [
-                {
-                    "name": task.name,
-                    "description": task.description,
-                    "expected_output": task.expected_output,
-                    "agent_name": task.agent_name,
-                    "async_execution": task.async_execution,
-                    "is_start": task.is_start,
-                    "context": task.context,
-                    "next_tasks": task.next_tasks,
-                    "task_type": task.task_type,
-                    "condition": task.condition
-                }
-                for task in self.tasks
-            ],
-            "embedder": {
-                "provider": self.embedder.provider,
-                "config": self.embedder.config
-            } if self.embedder else None,
-            "custom_config": self.custom_config
+            'name': self.name,
+            'process': self.process,
+            'agents': [vars(agent) for agent in self.agents],
+            'tasks': [vars(task) for task in self.tasks],
+            'memory': vars(self.memory) if self.memory else None,
+            'verbose': self.verbose
         }
 
-    def save_to_file(self, file_path: Union[str, Path]) -> None:
-        """Save configuration to file."""
-        file_path = Path(file_path)
-        
-        # Create directory if it doesn't exist
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        config_dict = self.to_dict()
-        
-        try:
-            with open(file_path, 'w', encoding='utf-8') as f:
-                if file_path.suffix.lower() in ['.yaml', '.yml']:
-                    yaml.dump(config_dict, f, default_flow_style=False, indent=2)
-                elif file_path.suffix.lower() == '.json':
-                    json.dump(config_dict, f, indent=2)
-                else:
-                    raise ConfigurationError(f"Unsupported file format: {file_path.suffix}")
-        except Exception as e:
-            raise ConfigurationError(f"Failed to save configuration to {file_path}: {str(e)}")
+    def validate(self) -> None:
+        """Validate configuration."""
+        errors = []
 
-    def merge(self, other: "OrchestratorConfig") -> "OrchestratorConfig":
-        """Merge this configuration with another, other takes precedence."""
-        merged_dict = self.to_dict()
-        other_dict = other.to_dict()
-        
-        # Deep merge dictionaries
-        def deep_merge(base: Dict, update: Dict) -> Dict:
-            for key, value in update.items():
-                if key in base and isinstance(base[key], dict) and isinstance(value, dict):
-                    base[key] = deep_merge(base[key], value)
-                else:
-                    base[key] = value
-            return base
-        
-        merged_dict = deep_merge(merged_dict, other_dict)
-        return self.from_dict(merged_dict)
+        # Validate agents
+        if not self.agents:
+            errors.append("At least one agent must be defined")
 
-    def get_agent_by_name(self, name: str) -> Optional[AgentConfig]:
-        """Get agent configuration by name."""
-        for agent in self.agents:
-            if agent.name == name:
-                return agent
-        return None
+        agent_names = {agent.name for agent in self.agents}
 
-    def get_task_by_name(self, name: str) -> Optional[TaskConfig]:
-        """Get task configuration by name."""
+        # Validate tasks
+        if not self.tasks:
+            errors.append("At least one task must be defined")
+
         for task in self.tasks:
-            if task.name == name:
-                return task
-        return None
+            if task.agent not in agent_names:
+                errors.append(f"Task '{task.name}' references unknown agent '{task.agent}'")
 
-    def get_enabled_agents(self) -> List[AgentConfig]:
-        """Get list of enabled agents."""
-        return [agent for agent in self.agents if agent.enabled]
+            for context_task in task.context:
+                if context_task not in {t.name for t in self.tasks}:
+                    errors.append(f"Task '{task.name}' references unknown context task '{context_task}'")
+
+        if errors:
+            raise ValidationError("Configuration validation failed:\n" + "\n".join(f"- {e}" for e in errors))
+
+
+def load_config(config_path: Union[str, Path]) -> OrchestratorConfig:
+    """Load orchestrator configuration from file."""
+    return OrchestratorConfig.from_yaml(config_path)
+
+
+def save_config(config: OrchestratorConfig, config_path: Union[str, Path]) -> None:
+    """Save orchestrator configuration to file."""
+    config_path = Path(config_path)
+
+    with open(config_path, 'w') as f:
+        yaml.dump(config.to_dict(), f, default_flow_style=False, sort_keys=False)

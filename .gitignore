@@ -10,6 +10,10 @@ __pycache__/
 venv/
 ENV/
 *.envrc
+.claude/
+.praison/
+.pytest_cache
+
 
 # Jupyter Notebooks
 .ipynb_checkpoints/

@@ -10,13 +10,22 @@ from dataclasses import dataclass, field
 from collections import defaultdict, deque
 import logging
 
-from ..integrations.praisonai import Task, Agent
+# Compatibility layer - supports both PraisonAI and LangChain
+try:
+    # Try LangChain first (new system)
+    from ..integrations.langchain_integration import LangChainTask as Task, LangChainAgent as Agent
+    USING_LANGCHAIN = True
+except ImportError:
+    # Fallback to PraisonAI (legacy system)
+    from ..integrations.praisonai import Task, Agent
+    USING_LANGCHAIN = False
 
 from ..core.config import TaskConfig, ProcessType
 from ..core.exceptions import WorkflowError, TaskExecutionError, DependencyError
 
 
 logger = logging.getLogger(__name__)
+logger.info(f"WorkflowEngine initialized with {'LangChain' if USING_LANGCHAIN else 'PraisonAI'} backend")
 
 
 class TaskStatus(str, Enum):
@@ -389,25 +398,45 @@ class WorkflowEngine:
                 
                 logger.debug(f"Executing task: {task_name} (attempt {attempt + 1})")
                 
-                # Execute the task
-                if hasattr(execution.task, 'aexecute'):
-                    # Async execution
+                # Execute the task - handle both LangChain and PraisonAI interfaces
+                if USING_LANGCHAIN:
+                    # LangChain task execution
+                    context_data = {
+                        "task_name": task_name,
+                        "config": execution.config,
+                        "dependencies": [
+                            self.executions[dep].result for dep in execution.dependencies 
+                            if dep in self.executions and self.executions[dep].result
+                        ]
+                    }
+                    
                     if self.timeout:
                         result = await asyncio.wait_for(
-                            execution.task.aexecute(),
+                            asyncio.to_thread(execution.task.execute, context_data),
                             timeout=self.timeout
                         )
                     else:
-                        result = await execution.task.aexecute()
+                        result = await asyncio.to_thread(execution.task.execute, context_data)
                 else:
-                    # Sync execution in thread pool
-                    if self.timeout:
-                        result = await asyncio.wait_for(
-                            asyncio.to_thread(execution.task.execute),
-                            timeout=self.timeout
-                        )
+                    # PraisonAI task execution (legacy)
+                    if hasattr(execution.task, 'aexecute'):
+                        # Async execution
+                        if self.timeout:
+                            result = await asyncio.wait_for(
+                                execution.task.aexecute(),
+                                timeout=self.timeout
+                            )
+                        else:
+                            result = await execution.task.aexecute()
                     else:
-                        result = await asyncio.to_thread(execution.task.execute)
+                        # Sync execution in thread pool
+                        if self.timeout:
+                            result = await asyncio.wait_for(
+                                asyncio.to_thread(execution.task.execute),
+                                timeout=self.timeout
+                            )
+                        else:
+                            result = await asyncio.to_thread(execution.task.execute)
                 
                 # Task completed successfully
                 execution.status = TaskStatus.COMPLETED
