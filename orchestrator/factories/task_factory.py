@@ -7,7 +7,10 @@ from abc import ABC, abstractmethod
 import logging
 from collections import defaultdict, deque
 
-from ..integrations.praisonai import Task, Agent
+from ..integrations.langchain_integration import (
+    LangChainAgent as Agent,
+    LangChainTask as Task,
+)
 
 from ..core.config import TaskConfig
 from ..core.exceptions import TaskExecutionError, DependencyError, TemplateError

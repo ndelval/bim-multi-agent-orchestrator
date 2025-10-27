@@ -196,7 +196,7 @@ from orchestrator.core.config import ExecutionConfig, ProcessType
 execution_config = ExecutionConfig(
     process=ProcessType.WORKFLOW,
     verbose=1,
-    max_iter=10,
+    max_iterations=10,
     memory=True,
     async_execution=True,
     user_id="user_123"

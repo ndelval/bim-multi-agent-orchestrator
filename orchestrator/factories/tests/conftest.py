@@ -15,7 +15,9 @@ def setup_test_env():
     os.environ["OPENAI_API_KEY"] = "sk-test-dummy-key-for-testing-only"
     yield
     # Cleanup after all tests
-    if "OPENAI_API_KEY" in os.environ and os.environ["OPENAI_API_KEY"].startswith("sk-test"):
+    if "OPENAI_API_KEY" in os.environ and os.environ["OPENAI_API_KEY"].startswith(
+        "sk-test"
+    ):
         del os.environ["OPENAI_API_KEY"]
 
 
@@ -31,9 +33,12 @@ def mock_langchain_llm(monkeypatch):
         return mock_llm
 
     try:
-        monkeypatch.setattr("orchestrator.integrations.langchain_integration.ChatOpenAI", mock_chatopenai)
+        monkeypatch.setattr(
+            "orchestrator.integrations.langchain_integration.ChatOpenAI",
+            mock_chatopenai,
+        )
     except:
-        pass  # If import fails, skip mocking (PraisonAI mode)
+        pass
 
     return mock_llm
 
@@ -47,7 +52,7 @@ def base_config():
         goal="Test Goal",
         backstory="Test Backstory",
         instructions="Test Instructions",
-        tools=[]
+        tools=[],
     )
 
 
@@ -60,7 +65,7 @@ def researcher_config():
         goal="Gather comprehensive information",
         backstory="Expert researcher",
         instructions="Research thoroughly",
-        tools=["duckduckgo"]
+        tools=["duckduckgo"],
     )
 
 
@@ -73,7 +78,7 @@ def orchestrator_config():
         goal="Coordinate agents",
         backstory="Expert coordinator",
         instructions="Coordinate effectively",
-        tools=[]
+        tools=[],
     )
 
 

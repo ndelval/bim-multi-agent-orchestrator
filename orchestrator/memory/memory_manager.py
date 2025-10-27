@@ -43,9 +43,6 @@ class MemoryManager:
                 self.provider = Mem0MemoryProvider(self.config.embedder)
             elif self.config.provider == MemoryProvider.HYBRID:
                 self.provider = HybridRAGMemoryProvider(self.config.embedder)
-            elif self.config.provider == MemoryProvider.MONGODB:
-                # TODO: Import MongoDBMemoryProvider when extracted
-                raise MemoryError(f"MongoDB provider not yet refactored. Use RAG or Mem0 for now.")
             else:
                 raise MemoryError(f"Unsupported memory provider: {self.config.provider}")
             

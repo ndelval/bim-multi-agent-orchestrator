@@ -1,9 +1,8 @@
 """
-CLI Backend Adapter for seamless StateGraph/PraisonAI integration.
+CLI Backend Adapter for StateGraph integration.
 
-This module provides a unified interface that automatically detects the best
-available backend (StateGraph vs PraisonAI) and provides an identical CLI
-experience regardless of the underlying system.
+This module provides a unified interface for StateGraph-based agent orchestration
+with dynamic planning and execution capabilities.
 """
 
 import json
@@ -14,14 +13,66 @@ from dataclasses import asdict
 
 from ..core.config import OrchestratorConfig, AgentConfig, MemoryConfig
 from ..core.orchestrator import Orchestrator
+from ..core.value_objects import ExecutionContext
 from .events import (
     emit_node_start,
     emit_node_complete,
     emit_tool_invocation,
     emit_tool_complete,
 )
+from .mermaid_utils import save_mermaid_diagram, get_graph_info
 
 logger = logging.getLogger(__name__)
+
+
+def calculate_safe_max_iterations(
+    graph_spec=None, agent_count=None, buffer_multiplier=3, minimum_buffer=15
+):
+    """
+    Calculate safe max_iterations based on graph topology.
+
+    This prevents the max_iterations validation error by accounting for:
+    - LangGraph internal nodes (routing, coordination, state management)
+    - State coercion overhead (multiple __post_init__ calls per node)
+    - Framework-specific execution patterns
+
+    Args:
+        graph_spec: Optional StateGraphSpec with node information
+        agent_count: Number of agents if graph_spec not available
+        buffer_multiplier: Multiplier for safety buffer (default: 3x nodes)
+        minimum_buffer: Minimum buffer to add (default: 15)
+
+    Returns:
+        Safe max_iterations value that accounts for framework overhead
+
+    Examples:
+        >>> calculate_safe_max_iterations(agent_count=3)
+        24  # 3 * 3 + 15 = 24
+
+        >>> calculate_safe_max_iterations(graph_spec=spec_with_5_nodes)
+        30  # 5 * 3 + 15 = 30
+    """
+    if graph_spec and hasattr(graph_spec, "nodes"):
+        node_count = len(graph_spec.nodes)
+    elif agent_count is not None:
+        node_count = agent_count
+    else:
+        # Fallback: assume small workflow
+        node_count = 3
+
+    # Formula: nodes * multiplier + buffer
+    # This accounts for:
+    # - Each user node (1x)
+    # - Internal framework nodes (~2x overhead)
+    # - Buffer for state coercion and retries
+    safe_iterations = node_count * buffer_multiplier + minimum_buffer
+
+    logger.debug(
+        f"Calculated safe max_iterations: {safe_iterations} "
+        f"(nodes={node_count}, multiplier={buffer_multiplier}, buffer={minimum_buffer})"
+    )
+
+    return safe_iterations
 
 
 class CLIBackendAdapter:
@@ -47,30 +98,42 @@ class CLIBackendAdapter:
 
         self.backend_info = self._detect_available_backends()
         self.use_stategraph = self.backend_info["stategraph"]["available"]
-        self.backend_type = "stategraph" if self.use_stategraph else "praisonai"
+        self.backend_type = "stategraph"
 
         logger.info(f"CLI Backend Adapter initialized: using {self.backend_type}")
         if self.use_stategraph:
-            logger.info("StateGraph pipeline fully available - enhanced orchestration enabled")
+            logger.info(
+                "StateGraph pipeline fully available - enhanced orchestration enabled"
+            )
         else:
-            logger.info("Using PraisonAI legacy system - full compatibility maintained")
+            logger.error("StateGraph dependencies not available - cannot proceed")
 
     def _detect_available_backends(self) -> Dict[str, Any]:
         """Detect which backend systems are available."""
         backend_info = {
-            "stategraph": {"available": False, "components": {}, "errors": []},
-            "praisonai": {"available": False, "components": {}, "errors": []}
+            "stategraph": {"available": False, "components": {}, "errors": []}
         }
 
         # Test StateGraph availability
         try:
             # Test LangGraph integration
-            from ..integrations.langchain_integration import is_available as langchain_available
-            backend_info["stategraph"]["components"]["langchain"] = langchain_available()
+            from ..integrations.langchain_integration import (
+                is_available as langchain_available,
+            )
+
+            backend_info["stategraph"]["components"][
+                "langchain"
+            ] = langchain_available()
 
             # Test graph planning pipeline
-            from ..planning import is_graph_planning_available, validate_planning_environment
-            backend_info["stategraph"]["components"]["graph_planning"] = is_graph_planning_available()
+            from ..planning import (
+                is_graph_planning_available,
+                validate_planning_environment,
+            )
+
+            backend_info["stategraph"]["components"][
+                "graph_planning"
+            ] = is_graph_planning_available()
 
             # Validate environment
             env_errors = validate_planning_environment()
@@ -79,23 +142,14 @@ class CLIBackendAdapter:
             # StateGraph is available if LangChain works and no critical errors
             critical_errors = [e for e in env_errors if "not available" in e.lower()]
             backend_info["stategraph"]["available"] = (
-                langchain_available() and
-                is_graph_planning_available() and
-                len(critical_errors) == 0
+                langchain_available()
+                and is_graph_planning_available()
+                and len(critical_errors) == 0
             )
 
         except Exception as e:
             backend_info["stategraph"]["errors"].append(f"Detection failed: {str(e)}")
             backend_info["stategraph"]["available"] = False
-
-        # Test PraisonAI availability (always available as fallback)
-        try:
-            from ..integrations.praisonai import is_available as praisonai_available
-            backend_info["praisonai"]["available"] = praisonai_available()
-            backend_info["praisonai"]["components"]["praisonai"] = praisonai_available()
-        except Exception as e:
-            backend_info["praisonai"]["errors"].append(f"Detection failed: {str(e)}")
-            backend_info["praisonai"]["available"] = False
 
         return backend_info
 
@@ -104,14 +158,11 @@ class CLIBackendAdapter:
         return {
             "current_backend": self.backend_type,
             "stategraph_available": self.backend_info["stategraph"]["available"],
-            "praisonai_available": self.backend_info["praisonai"]["available"],
-            "backend_details": self.backend_info
+            "backend_details": self.backend_info,
         }
 
     def execute_router(
-        self,
-        router_config: OrchestratorConfig,
-        timeout: Optional[float] = None
+        self, router_config: OrchestratorConfig, timeout: Optional[float] = None
     ) -> Any:
         """
         Execute router decision with the best available backend.
@@ -127,60 +178,35 @@ class CLIBackendAdapter:
             if self.use_stategraph:
                 return self._execute_stategraph_router(router_config, timeout)
             else:
-                return self._execute_legacy_router(router_config, timeout)
+                raise RuntimeError("StateGraph backend not available")
 
         except Exception as e:
             logger.error(f"Router execution failed with {self.backend_type}: {e}")
-            # Fallback to the other backend if possible
-            if self.use_stategraph and self.backend_info["praisonai"]["available"]:
-                logger.info("Falling back to PraisonAI for router execution")
-                return self._execute_legacy_router(router_config, timeout)
-            else:
-                raise
+            raise
 
     def execute_route(
-        self,
-        prompt: str,
-        agent_sequence: Sequence[str],
-        recall_items: Sequence[str],
-        assignments: Optional[List[Dict[str, Any]]] = None,
-        base_memory_config: Optional[MemoryConfig] = None,
-        user_id: str = "default_user",
-        verbose: int = 1,
-        max_iter: int = 6
+        self, agent_sequence: Sequence[str], context: ExecutionContext
     ) -> Any:
         """
         Execute route with the best available backend.
 
         Args:
-            prompt: User prompt to process
             agent_sequence: Sequence of agents to use
-            recall_items: Memory recall context
-            assignments: Optional pre-generated assignments
-            base_memory_config: Memory configuration
-            user_id: User identifier
-            verbose: Verbosity level
-            max_iter: Maximum iterations
+            context: ExecutionContext with prompt, user_id, recall_items, etc.
 
         Returns:
             Route execution result in consistent format
         """
         try:
             if self.use_stategraph:
-                return self._execute_stategraph_route(
-                    prompt, agent_sequence, recall_items, assignments,
-                    base_memory_config, user_id, verbose, max_iter
-                )
+                return self._execute_stategraph_route(agent_sequence, context)
             else:
-                return self._execute_legacy_route(
-                    prompt, agent_sequence, recall_items, assignments,
-                    base_memory_config, user_id, verbose, max_iter
-                )
+                return self._execute_legacy_route(agent_sequence, context)
 
         except Exception as e:
             logger.error(f"StateGraph route execution failed: {e}")
-            # Fail fast - no PraisonAI fallback (legacy system being phased out)
             from ..core.exceptions import GraphCreationError
+
             raise GraphCreationError(
                 f"StateGraph execution failed. Please check graph configuration and ToT planning output. "
                 f"Original error: {str(e)}"
@@ -193,7 +219,7 @@ class CLIBackendAdapter:
         agent_catalog: Sequence[AgentConfig],
         memory_config: Optional[MemoryConfig] = None,
         backend_preference: str = "gpt-4o-mini",
-        max_steps: int = 3
+        max_steps: int = 3,
     ) -> Dict[str, Any]:
         """
         Generate planning using the best available method.
@@ -212,51 +238,53 @@ class CLIBackendAdapter:
         try:
             if self.use_stategraph:
                 return self._generate_stategraph_planning(
-                    prompt, recall_snippets, agent_catalog, memory_config,
-                    backend_preference, max_steps
+                    prompt,
+                    recall_snippets,
+                    agent_catalog,
+                    memory_config,
+                    backend_preference,
+                    max_steps,
                 )
             else:
                 return self._generate_legacy_planning(
-                    prompt, recall_snippets, agent_catalog, memory_config,
-                    backend_preference, max_steps
+                    prompt,
+                    recall_snippets,
+                    agent_catalog,
+                    memory_config,
+                    backend_preference,
+                    max_steps,
                 )
 
         except Exception as e:
             logger.error(f"Planning generation failed with {self.backend_type}: {e}")
-            # Fallback to legacy planning
-            if self.use_stategraph and self.backend_info["praisonai"]["available"]:
-                logger.info("Falling back to PraisonAI for planning generation")
-                return self._generate_legacy_planning(
-                    prompt, recall_snippets, agent_catalog, memory_config,
-                    backend_preference, max_steps
-                )
-            else:
-                raise
+            raise
 
     # StateGraph Implementation Methods
 
     def _execute_stategraph_router(
-        self,
-        router_config: OrchestratorConfig,
-        timeout: Optional[float]
+        self, router_config: OrchestratorConfig, timeout: Optional[float]
     ) -> Any:
         """Execute router using StateGraph system."""
         try:
             from ..integrations.langchain_integration import (
-                OrchestratorState, HumanMessage
+                OrchestratorState,
+                HumanMessage,
             )
             from ..factories.graph_factory import GraphFactory
 
             # Create StateGraph for router
             graph_factory = GraphFactory()
-            router_agent_config = router_config.agents[0] if router_config.agents else None
+            router_agent_config = (
+                router_config.agents[0] if router_config.agents else None
+            )
 
             if not router_agent_config:
                 raise ValueError("No router agent configuration provided")
 
-
             # Create chat graph with router agent (pass as routing_agent parameter)
-            router_graph = graph_factory.create_chat_graph([], routing_agent=router_agent_config)
+            router_graph = graph_factory.create_chat_graph(
+                [], routing_agent=router_agent_config
+            )
 
             # Compile the StateGraph for execution
             compiled_router = router_graph.compile()
@@ -268,7 +296,7 @@ class CLIBackendAdapter:
             initial_state = OrchestratorState(
                 messages=[HumanMessage(content=user_prompt)],
                 input_prompt=user_prompt,
-                max_iterations=router_config.max_iter
+                max_iterations=router_config.max_iterations,
             )
 
             # Execute StateGraph
@@ -283,22 +311,15 @@ class CLIBackendAdapter:
             raise
 
     def _execute_stategraph_route(
-        self,
-        prompt: str,
-        agent_sequence: Sequence[str],
-        recall_items: Sequence[str],
-        assignments: Optional[List[Dict[str, Any]]],
-        base_memory_config: Optional[MemoryConfig],
-        user_id: str,
-        verbose: int,
-        max_iter: int
+        self, agent_sequence: Sequence[str], context: ExecutionContext
     ) -> Any:
         """Execute route using StateGraph system with ToT planning."""
         try:
             from ..planning import generate_graph_with_tot, PlanningSettings
             from ..planning.graph_compiler import compile_tot_graph
             from ..integrations.langchain_integration import (
-                OrchestratorState, HumanMessage
+                OrchestratorState,
+                HumanMessage,
             )
 
             # Create agent configurations from sequence
@@ -307,18 +328,18 @@ class CLIBackendAdapter:
             # Use ToT→StateGraph pipeline
             logger.info("🚀 Using advanced ToT→StateGraph planning (CLI v6.4)")
             planning_result = generate_graph_with_tot(
-                prompt=prompt,
-                recall_snippets=recall_items,
+                prompt=context.prompt,
+                recall_snippets=context.recall_items,
                 agent_catalog=agent_configs,
                 settings=PlanningSettings(
                     backend="gpt-4o-mini",  # Use efficient model
                     max_steps=max(len(agent_sequence), 3),
                     n_generate_sample=2,
                     n_evaluate_sample=1,
-                    n_select_sample=1
+                    n_select_sample=1,
                 ),
-                memory_config=base_memory_config,
-                enable_graph_planning=True
+                memory_config=context.base_memory_config,
+                enable_graph_planning=True,
             )
 
             graph_spec = planning_result.get("graph_spec")
@@ -328,28 +349,93 @@ class CLIBackendAdapter:
                 logger.debug("Compiling and executing StateGraph")
                 compiled_graph = compile_tot_graph(graph_spec, agent_configs)
 
+                # PHASE 2: Generate and save Mermaid diagram
+                try:
+                    graph_info = get_graph_info(compiled_graph)
+
+                    # Check for errors in graph info extraction
+                    if "error" in graph_info:
+                        logger.warning(
+                            f"Failed to extract graph info: {graph_info['error']}"
+                        )
+                    else:
+                        logger.info(
+                            f"📊 Graph structure: {graph_info['node_count']} nodes, {graph_info['edge_count']} edges"
+                        )
+
+                    mermaid_path = save_mermaid_diagram(
+                        compiled_graph, filename=f"workflow_{graph_spec.name}"
+                    )
+                    if mermaid_path:
+                        logger.info(f"📈 Mermaid diagram saved: {mermaid_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to generate Mermaid diagram: {e}")
+
+                # Calculate safe max_iterations based on graph topology
+                safe_max_iter = calculate_safe_max_iterations(
+                    graph_spec=graph_spec, agent_count=len(agent_configs)
+                )
+                logger.info(
+                    f"Using dynamic max_iterations={safe_max_iter} "
+                    f"(graph has {len(graph_spec.nodes)} nodes)"
+                )
+
                 # Create initial state with context
-                context_content = f"{prompt}\n\nMemory Context:\n" + "\n".join(f"- {item}" for item in recall_items)
+                context_content = f"{context.prompt}\n\nMemory Context:\n" + "\n".join(
+                    f"- {item}" for item in context.recall_items
+                )
                 initial_state = OrchestratorState(
                     messages=[HumanMessage(content=context_content)],
-                    input_prompt=prompt,
-                    memory_context="\n".join(recall_items),
-                    max_iterations=max_iter,
-                    recall_items=list(recall_items)
+                    input_prompt=context.prompt,
+                    memory_context="\n".join(context.recall_items),
+                    max_iterations=safe_max_iter,  # Use calculated value instead of hardcoded
+                    recall_items=list(context.recall_items),
                 )
 
                 # Execute compiled StateGraph
+                # NOTE: LangGraph's StateGraph.invoke() returns a dict, not an OrchestratorState object
                 result = compiled_graph.invoke(initial_state)
+
+                # Post-execution validation: detect abnormal execution patterns
+                # DEFENSIVE FIX: Extract execution_depth from dict state (mimics OrchestratorState.execution_depth property)
+                # OrchestratorState.execution_depth is computed as: len(self.execution_path)
+                if isinstance(result, dict):
+                    execution_path = result.get("execution_path", [])
+                    final_depth = len(execution_path) if execution_path else 0
+                else:
+                    # Fallback for object-based state (future-proof)
+                    final_depth = getattr(result, "execution_depth", 0)
+
+                from ..core.constants import DEPTH_WARNING_THRESHOLD
+
+                if final_depth > DEPTH_WARNING_THRESHOLD:
+                    logger.warning(
+                        f"⚠️  High execution depth detected: {final_depth} steps. "
+                        f"This may indicate inefficient graph topology or potential loops."
+                    )
+                elif final_depth > safe_max_iter * 0.8:
+                    logger.info(
+                        f"Execution depth ({final_depth}) approaching max_iterations ({safe_max_iter}). "
+                        f"Consider optimizing graph structure if this occurs frequently."
+                    )
+
+                logger.debug(
+                    f"Workflow completed successfully in {final_depth} execution steps"
+                )
+
                 return self._extract_result_from_state(result)
 
             else:
                 # Fallback to assignments if no graph generated
-                logger.info("⚠️  No StateGraph generated, falling back to assignment execution")
-                fallback_assignments = planning_result.get("assignments", assignments or [])
-                return self._execute_legacy_route(
-                    prompt, agent_sequence, recall_items, fallback_assignments,
-                    base_memory_config, user_id, verbose, max_iter
+                logger.info(
+                    "⚠️  No StateGraph generated, falling back to assignment execution"
                 )
+                fallback_assignments = planning_result.get(
+                    "assignments", context.assignments or []
+                )
+                # Create updated context with fallback assignments
+                fallback_context = context.with_assignments(fallback_assignments)
+                return self._execute_legacy_route(agent_sequence, fallback_context)
 
         except Exception as e:
             logger.error(f"StateGraph route execution failed: {e}")
@@ -362,14 +448,16 @@ class CLIBackendAdapter:
         agent_catalog: Sequence[AgentConfig],
         memory_config: Optional[MemoryConfig],
         backend_preference: str,
-        max_steps: int
+        max_steps: int,
     ) -> Dict[str, Any]:
         """Generate planning using StateGraph ToT system."""
         try:
             from ..planning import generate_graph_with_tot, PlanningSettings
 
             # Use advanced graph planning
-            logger.info("🧠 ToT Graph Planning: generating StateGraph specification (CLI v6.4)")
+            logger.info(
+                "🧠 ToT Graph Planning: generating StateGraph specification (CLI v6.4)"
+            )
             result = generate_graph_with_tot(
                 prompt=prompt,
                 recall_snippets=recall_snippets,
@@ -379,109 +467,22 @@ class CLIBackendAdapter:
                     max_steps=max_steps,
                     n_generate_sample=3,
                     n_evaluate_sample=2,
-                    n_select_sample=2
+                    n_select_sample=2,
                 ),
                 memory_config=memory_config,
-                enable_graph_planning=True
+                enable_graph_planning=True,
             )
 
-            planning_method = result.get('planning_method', 'unknown')
-            assignments_count = len(result.get('assignments', []))
-            has_graph = result.get('graph_spec') is not None
-            logger.info(f"✅ StateGraph planning completed: method={planning_method}, assignments={assignments_count}, graph_spec={'YES' if has_graph else 'NO'}")
+            planning_method = result.get("planning_method", "unknown")
+            assignments_count = len(result.get("assignments", []))
+            has_graph = result.get("graph_spec") is not None
+            logger.info(
+                f"✅ StateGraph planning completed: method={planning_method}, assignments={assignments_count}, graph_spec={'YES' if has_graph else 'NO'}"
+            )
             return result
 
         except Exception as e:
             logger.error(f"StateGraph planning failed: {e}")
-            raise
-
-    # Legacy Implementation Methods
-
-    def _execute_legacy_router(
-        self,
-        router_config: OrchestratorConfig,
-        timeout: Optional[float]
-    ) -> Any:
-        """Execute router using legacy PraisonAI system."""
-        logger.debug("Executing router with PraisonAI legacy backend")
-        orchestrator = Orchestrator(router_config)
-        return orchestrator.run_sync()
-
-    def _execute_legacy_route(
-        self,
-        prompt: str,
-        agent_sequence: Sequence[str],
-        recall_items: Sequence[str],
-        assignments: Optional[List[Dict[str, Any]]],
-        base_memory_config: Optional[MemoryConfig],
-        user_id: str,
-        verbose: int,
-        max_iter: int
-    ) -> Any:
-        """Execute route using legacy PraisonAI system."""
-        from ..core.config import ProcessType
-
-        logger.debug("Executing route with PraisonAI legacy backend")
-
-        # Create agent configurations
-        agent_configs = self._create_agent_configs_from_sequence(agent_sequence)
-
-        # Build route configuration
-        route_config = OrchestratorConfig(
-            name="CliRoute::legacy",
-            process=ProcessType.WORKFLOW.value,
-            agents=agent_configs,
-            tasks=[],
-            memory=base_memory_config,
-            verbose=verbose >= 2,
-        )
-
-        # Create and execute orchestrator
-        route_orchestrator = Orchestrator(route_config)
-
-        # Use dynamic planning
-        route_orchestrator.plan_from_prompt(
-            prompt,
-            agent_sequence,
-            recall_snippets=recall_items,
-            assignments=assignments
-        )
-
-        return route_orchestrator.run_sync()
-
-    def _generate_legacy_planning(
-        self,
-        prompt: str,
-        recall_snippets: Sequence[str],
-        agent_catalog: Sequence[AgentConfig],
-        memory_config: Optional[MemoryConfig],
-        backend_preference: str,
-        max_steps: int
-    ) -> Dict[str, Any]:
-        """Generate planning using legacy ToT system."""
-        try:
-            from ..planning import generate_plan_with_tot, PlanningSettings
-
-            # Use traditional assignment planning
-            logger.info("📋 Legacy ToT Planning: using assignment-based planning (fallback mode)")
-            result = generate_plan_with_tot(
-                prompt=prompt,
-                recall_snippets=recall_snippets,
-                agent_catalog=agent_catalog,
-                settings=PlanningSettings(
-                    backend=backend_preference,
-                    max_steps=max_steps
-                ),
-                memory_config=memory_config
-            )
-
-            # Add planning method for consistency
-            result["planning_method"] = "assignments"
-            logger.info(f"Legacy planning completed: {len(result.get('assignments', []))} assignments")
-            return result
-
-        except Exception as e:
-            logger.error(f"Legacy planning failed: {e}")
             raise
 
     # CLI-Compatible Methods
@@ -504,7 +505,7 @@ class CLIBackendAdapter:
             name=f"{agent_config.name}_task",
             description=f"USER PROMPT: {user_query}",
             expected_output="Analysis result",
-            agent=agent_config.name
+            agent=agent_config.name,
         )
 
         config = OrchestratorConfig(
@@ -519,10 +520,7 @@ class CLIBackendAdapter:
         return self.execute_router(config)
 
     def run_multi_agent_workflow(
-        self,
-        agent_sequence: List[str],
-        user_query: str,
-        rich_display=None
+        self, agent_sequence: List[str], user_query: str, display_adapter=None
     ) -> Any:
         """
         Run a multi-agent workflow with the given agent sequence.
@@ -530,13 +528,12 @@ class CLIBackendAdapter:
         Args:
             agent_sequence: List of agent names to execute in sequence
             user_query: User query to process
-            rich_display: Optional Rich display for progress updates
+            display_adapter: Optional display adapter for progress updates
 
         Returns:
             Workflow execution result
         """
         from .main import _get_agent_template
-        from .events import emit_agent_start, emit_agent_complete
 
         # Create agent configurations from sequence
         agent_configs = []
@@ -555,46 +552,68 @@ class CLIBackendAdapter:
         if self.memory_manager:
             # PRIORITY 2 FIX: Retrieve relevant context from memory (now properly delegated)
             memory_results = self.memory_manager.retrieve_with_graph(
-                query=user_query,
-                limit=5
+                query=user_query, limit=5
             )
             recall_items = [
-                f"{item.get('content', '')[:200]}"
-                for item in memory_results
+                f"{item.get('content', '')[:200]}" for item in memory_results
             ]
             if not recall_items:
                 logger.debug("No relevant memories found in graph search")
 
         # Emit progress events if display provided
-        if rich_display:
+        if display_adapter:
             for agent_name in agent_sequence:
-                emit_agent_start(agent_name, f"Processing with {agent_name}")
+                display_adapter.show_agent_start(
+                    agent_name, f"Processing with {agent_name}"
+                )
 
-        # Execute the route
-        result = self.execute_route(
+        # Calculate safe max_iterations for this workflow
+        safe_max_iter = calculate_safe_max_iterations(agent_count=len(agent_sequence))
+        logger.debug(
+            f"Multi-agent workflow using max_iterations={safe_max_iter} "
+            f"for {len(agent_sequence)} agents"
+        )
+
+        # Create execution context
+        execution_context = ExecutionContext(
             prompt=user_query,
-            agent_sequence=agent_sequence,
             recall_items=recall_items,
             assignments=None,
             base_memory_config=None,
             user_id="default_user",
             verbose=1,
-            max_iter=6
+            max_iterations=safe_max_iter,  # Use calculated value instead of hardcoded 6
+        )
+
+        # Execute the route
+        result = self.execute_route(
+            agent_sequence=agent_sequence, context=execution_context
         )
 
         # Emit completion events
-        if rich_display:
+        if display_adapter:
             for agent_name in agent_sequence:
-                emit_agent_complete(agent_name, f"{agent_name} completed")
+                display_adapter.show_agent_complete(
+                    agent_name, f"{agent_name} completed"
+                )
 
         # PRIORITY 1 FIX: Extract final output from state before returning
-        final_output = self._extract_result_from_state(result)
+        if isinstance(result, dict) and any(
+            key in result for key in ("messages", "final_output", "agent_outputs")
+        ):
+            final_output = self._extract_result_from_state(result)
+        elif isinstance(result, str):
+            final_output = result
+        else:
+            # Already-normalized payload (e.g., {"output": ..., "current_route": ...})
+            final_output = result
 
-        # Emit final answer to Rich display if available
-        if rich_display:
-            from .events import emit_final_answer
-            emit_final_answer(final_output)
+        # Show final answer via display adapter if available
+        if display_adapter:
+            from orchestrator.cli.main import _extract_text
 
+            display_text = _extract_text(final_output)
+            display_adapter.show_final_answer(display_text)
         return final_output  # Return clean text, not state object
 
     # Helper Methods
@@ -618,6 +637,15 @@ class CLIBackendAdapter:
 
         PHASE 3 FIX: Returns routing metadata when present to support proper decision extraction.
         """
+
+        # Preserve already-normalized payloads and literal strings
+        if isinstance(state, str):
+            return state.strip()
+
+        if isinstance(state, dict) and "output" in state and not any(
+            key in state for key in ("messages", "final_output", "agent_outputs")
+        ):
+            return state
 
         def _from_mapping(mapping: Dict[str, Any]) -> Optional[str]:
             """Best-effort extraction when StateGraph returns a dict."""
@@ -649,15 +677,15 @@ class CLIBackendAdapter:
 
         # PHASE 3 FIX: Extract routing metadata from state
         routing_metadata = {}
-        if hasattr(state, 'current_route'):
-            routing_metadata['decision'] = getattr(state, 'current_route')
-        if hasattr(state, 'router_decision'):
-            routing_metadata['router_decision'] = getattr(state, 'router_decision')
+        if hasattr(state, "current_route"):
+            routing_metadata["decision"] = getattr(state, "current_route")
+        if hasattr(state, "router_decision"):
+            routing_metadata["router_decision"] = getattr(state, "router_decision")
         if isinstance(state, dict):
-            if 'current_route' in state:
-                routing_metadata['decision'] = state['current_route']
-            if 'router_decision' in state:
-                routing_metadata['router_decision'] = state['router_decision']
+            if "current_route" in state:
+                routing_metadata["decision"] = state["current_route"]
+            if "router_decision" in state:
+                routing_metadata["router_decision"] = state["router_decision"]
 
         # Get raw output from state depending on the container type (EXISTING CODE)
         raw_output: Optional[str] = None
@@ -683,14 +711,16 @@ class CLIBackendAdapter:
             raw_output = "No output generated"
 
         # Clean the output: remove agent name prefix (e.g., "**Orchestrator**: ")
-        clean_output = re.sub(r'^\*\*\w+\*\*:\s*', '', raw_output.strip())
+        clean_output = re.sub(r"^\*\*\w+\*\*:\s*", "", raw_output.strip())
 
         # Try to parse as JSON to extract the "response" field
         try:
             parsed = json.loads(clean_output)
             if isinstance(parsed, dict):
                 # Extract response field, fallback to content, then original
-                clean_output = parsed.get('response', parsed.get('content', clean_output))
+                clean_output = parsed.get(
+                    "response", parsed.get("content", clean_output)
+                )
         except (json.JSONDecodeError, ValueError):
             # Not JSON, use cleaned text
             pass
@@ -698,14 +728,16 @@ class CLIBackendAdapter:
         # PHASE 3 FIX: Flatten routing metadata to top-level keys for _extract_decision() compatibility
         if routing_metadata:
             return {
-                'output': clean_output,
-                'current_route': routing_metadata.get('decision'),
-                'router_decision': routing_metadata.get('router_decision')
+                "output": clean_output,
+                "current_route": routing_metadata.get("decision"),
+                "router_decision": routing_metadata.get("router_decision"),
             }
 
         return clean_output  # Legacy format for backward compatibility
 
-    def _create_agent_configs_from_sequence(self, agent_sequence: Sequence[str]) -> List[AgentConfig]:
+    def _create_agent_configs_from_sequence(
+        self, agent_sequence: Sequence[str]
+    ) -> List[AgentConfig]:
         """Create agent configurations from agent sequence."""
         from .main import _get_agent_template
 
@@ -755,5 +787,5 @@ __all__ = [
     "CLIBackendAdapter",
     "GraphAgentAdapter",  # PHASE 1 FIX: Export alias
     "get_cli_adapter",
-    "reset_cli_adapter"
+    "reset_cli_adapter",
 ]

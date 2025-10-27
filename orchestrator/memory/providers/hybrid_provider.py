@@ -220,7 +220,7 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
         except ImportError as exc:
             raise ProviderError("chromadb package required for Hybrid provider. Install with 'pip install chromadb'.") from exc
 
-        path = vector_cfg.get("config", {}).get("path") or vector_cfg.get("path") or ".praison/hybrid_chroma"
+        path = vector_cfg.get("config", {}).get("path") or vector_cfg.get("path") or ".orchestrator/hybrid_chroma"
         Path(path).mkdir(parents=True, exist_ok=True)
 
         self._vector_path = path
@@ -239,7 +239,7 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
             raise ProviderError(f"Failed to create Chroma collection: {exc}")
 
     def _initialize_lexical_index(self, lexical_cfg: Dict[str, Any]) -> None:
-        db_path = lexical_cfg.get("db_path") or ".praison/hybrid_lexical.db"
+        db_path = lexical_cfg.get("db_path") or ".orchestrator/hybrid_lexical.db"
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._lex_conn = sqlite3.connect(db_path, check_same_thread=False)
         with self._lex_lock:

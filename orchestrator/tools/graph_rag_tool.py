@@ -108,7 +108,7 @@ class GraphRAGTool:
 
 
 def create_graph_rag_tool(memory_manager, *, default_user_id: Optional[str] = None, default_run_id: Optional[str] = None):
-    """Return a callable tool ready to register in PraisonAI agents."""
+    """Return a callable tool ready to register in orchestrator agents."""
 
     tool = GraphRAGTool(memory_manager, default_user_id=default_user_id, default_run_id=default_run_id)
 

@@ -192,7 +192,7 @@ class RichWorkflowDisplay:
 
         Args:
             user_prompt: User's input prompt
-            backend: Backend type (LangGraph/PraisonAI)
+            backend: Backend type (LangGraph)
         """
         header_text = Text()
         header_text.append("🤖 Multi-Agent Orchestrator CLI", style="bold cyan")

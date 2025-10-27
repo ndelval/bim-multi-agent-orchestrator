@@ -28,9 +28,9 @@ class RAGMemoryProvider(BaseMemoryProvider):
     def initialize(self, config: Dict[str, Any]) -> None:
         """Initialize RAG provider."""
         try:
-            self.short_db_path = config.get("short_db", ".praison/memory/short.db")
-            self.long_db_path = config.get("long_db", ".praison/memory/long.db")
-            self.rag_db_path = config.get("rag_db_path", ".praison/memory/chroma_db")
+            self.short_db_path = config.get("short_db", ".orchestrator/memory/short.db")
+            self.long_db_path = config.get("long_db", ".orchestrator/memory/long.db")
+            self.rag_db_path = config.get("rag_db_path", ".orchestrator/memory/chroma_db")
             
             # Create directories if they don't exist
             for db_path in [self.short_db_path, self.long_db_path, self.rag_db_path]:

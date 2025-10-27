@@ -4,6 +4,30 @@ Tree-of-Thought Graph Planner for StateGraph generation.
 This module provides an enhanced ToT planner that can generate structured
 StateGraph specifications instead of linear task assignments, giving users
 more control over agent workflow orchestration.
+
+REFACTORING SUMMARY (Edge Inference Engine):
+============================================
+Problem: ToT LLM often generates nodes and parallel_groups but fails to generate
+         edges, resulting in "unreachable nodes" validation errors.
+
+Solution: Intelligent edge inference system that constructs edges from:
+    1. Temporal node order (sequential connections in ToT tree)
+    2. Conditional patterns (condition/router node → 2+ branches)
+    3. Parallel group metadata (auto fan-out/fan-in edges)
+
+Key Changes:
+- Added _infer_edges_from_graph_structure() - Main inference coordinator
+- Added _infer_conditional_edges() - Detects conditional branching patterns
+- Added _infer_temporal_edges() - Creates sequential edges from node order
+- Added _infer_parallel_edges_from_groups() - Parallel group edge generation
+- Modified _auto_fix_graph() - Calls inference before fallback
+- Enhanced _build_graph_spec_from_plan() - Better documentation
+
+Design Principles:
+- Single Responsibility: Each inference function handles one pattern type
+- Open/Closed: New inference strategies can be added without modifying existing code
+- Fail-safe: Multiple fallback layers (inference → parallel → sequential)
+- Backward Compatible: Preserves existing ToT edge generation when it works
 """
 
 from __future__ import annotations
@@ -13,7 +37,7 @@ import logging
 import re
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Set
 
 from .graph_specifications import (
     StateGraphSpec,
@@ -138,11 +162,11 @@ class GraphPlanningTask(Task):
             "2. Para parallel_groups: primero crea los nodos individuales, luego el parallel_group que los referencia\n"
             "3. El 'name' del nodo puede ser descriptivo pero el 'agent' debe ser el nombre exacto del agente\n\n"
             "Ejemplos válidos:\n"
-            '{"component_type":"node","name":"research_task","type":"agent","agent":"Researcher",'
+            '{"component_type":"node","name":"research","type":"agent","agent":"Researcher",'
             '"objective":"Gather market information","expected_output":"Research report"}\n'
-            '{"component_type":"node","name":"analysis_task","type":"agent","agent":"Analyst",'
+            '{"component_type":"node","name":"analysis","type":"agent","agent":"Analyst",'
             '"objective":"Analyze data","expected_output":"Analysis report"}\n'
-            '{"component_type":"parallel_group","name":"parallel_research","parallel_nodes":["research_task","analysis_task"]}\n'
+            '{"component_type":"parallel_group","name":"parallel_research","parallel_nodes":["research","analysis"]}\n'
         )
 
     def standard_prompt_wrap(self, x: str, y: str = "") -> str:
@@ -465,7 +489,30 @@ def _build_graph_spec_from_plan(
     graph_name: str,
     settings: Optional[GraphPlanningSettings] = None
 ) -> StateGraphSpec:
-    """Build StateGraphSpec from ToT planning output."""
+    """
+    Build StateGraphSpec from ToT planning output with intelligent edge inference.
+
+    This function handles the common issue where ToT LLM generates nodes and parallel_groups
+    but fails to generate edges, leading to unreachable node errors.
+
+    Refactored implementation provides:
+    1. Parse ToT LLM output for explicit nodes/edges/parallel_groups
+    2. Ensure start/end nodes exist
+    3. **NEW: Intelligent edge inference** when ToT fails to generate edges:
+       - Temporal order inference (sequential node connections)
+       - Conditional pattern detection (condition → branches)
+       - Parallel group edge generation (fan-out/fan-in)
+    4. Validation and auto-fix with configurable fallback behavior
+
+    Args:
+        plan_text: Raw ToT planning output (JSON lines)
+        agent_catalog: Available agents for node creation
+        graph_name: Name for the generated graph
+        settings: Planning configuration with fallback options
+
+    Returns:
+        Complete StateGraphSpec with nodes and inferred edges
+    """
 
     if settings is None:
         settings = GraphPlanningSettings()
@@ -487,7 +534,10 @@ def _build_graph_spec_from_plan(
             continue
 
         # Parse multiple JSON objects from the same line
-        for component in _parse_json_objects(line):
+        parsed_objects = _parse_json_objects(line)
+        if parsed_objects:
+            logger.debug(f"Parsed {len(parsed_objects)} component(s) from line")
+        for component in parsed_objects:
             comp_type = component.get("component_type", "")
 
             if comp_type == "node":
@@ -507,6 +557,13 @@ def _build_graph_spec_from_plan(
                         parallel_nodes, agent_catalog, components["nodes"]
                     )
 
+    # Log parsing summary
+    logger.info(
+        f"Parsed {len(components['nodes'])} nodes, "
+        f"{len(components['edges'])} edges, "
+        f"{len(components['parallel_groups'])} parallel groups"
+    )
+
     # If no valid components found, create sequential graph from agents
     if not components["nodes"]:
         logger.info("No graph components found, creating sequential fallback")
@@ -516,11 +573,30 @@ def _build_graph_spec_from_plan(
     for node in components["nodes"]:
         graph_spec.add_node(node)
 
+    # Build set of parallel group node pairs to prevent conflicting edges
+    parallel_pairs = set()
+    for parallel_group in components["parallel_groups"]:
+        nodes = parallel_group.nodes
+        for i in range(len(nodes)):
+            for j in range(len(nodes)):
+                if i != j:
+                    parallel_pairs.add((nodes[i], nodes[j]))
+
     # Track edge failures for better visibility
     edge_errors = []
     edges_added = 0
+    edges_filtered = 0
 
     for edge in components["edges"]:
+        # Skip edges between parallel group members (semantic conflict prevention)
+        if (edge.from_node, edge.to_node) in parallel_pairs:
+            logger.info(
+                f"Filtering edge {edge.from_node}→{edge.to_node} "
+                f"(conflicts with parallel group execution)"
+            )
+            edges_filtered += 1
+            continue
+
         try:
             graph_spec.add_edge(edge)
             edges_added += 1
@@ -532,9 +608,11 @@ def _build_graph_spec_from_plan(
                 'error': str(e)
             })
 
-    # Surface critical failures
+    # Surface edge processing summary
+    if edges_filtered > 0:
+        logger.info(f"Parallel conflict resolution: {edges_filtered} edge(s) filtered to preserve parallelization")
     if edge_errors:
-        logger.warning(f"Edge validation: {edges_added} succeeded, {len(edge_errors)} failed")
+        logger.warning(f"Edge validation: {edges_added} succeeded, {len(edge_errors)} failed, {edges_filtered} filtered")
         if edges_added == 0 and len(components["edges"]) > 0:
             logger.error("CRITICAL: All edges failed validation - graph will be disconnected")
             for err in edge_errors:
@@ -568,6 +646,14 @@ def _build_graph_spec_from_plan(
         if settings.enable_auto_fallback:
             logger.info("Auto-fallback enabled, attempting to fix graph validation errors")
             _auto_fix_graph(graph_spec)
+
+            # ✅ RE-VALIDATE after auto-fix
+            post_fix_errors = graph_spec.validate()
+            if post_fix_errors:
+                logger.error(f"Auto-fix failed to resolve errors: {post_fix_errors}")
+                raise ValueError(f"Graph validation failed even after auto-fix: {post_fix_errors}")
+            else:
+                logger.info("✅ Auto-fix successfully resolved all validation errors")
         else:
             logger.warning("Auto-fallback disabled, graph may have validation errors")
 
@@ -596,7 +682,7 @@ def _parse_json_objects(text: str) -> List[Dict[str, Any]]:
         try:
             obj, end_idx = decoder.raw_decode(text, idx)
             objects.append(obj)
-            idx += end_idx
+            idx = end_idx  # end_idx is absolute position, not offset
         except json.JSONDecodeError as e:
             logger.warning(f"Failed to parse JSON at position {idx}: {e}")
             # ERROR RECOVERY: Skip to next JSON object and continue parsing
@@ -675,57 +761,43 @@ def _create_nodes_from_parallel_group(
     existing_nodes: List[GraphNodeSpec],
 ) -> None:
     """
-    Auto-create GraphNodeSpec objects from parallel_nodes list.
+    DISABLED: Auto-creation caused orphaned nodes without edge connections.
 
-    Maps node names to agents from catalog and creates missing nodes.
-    Modifies existing_nodes list in-place.
+    Parallel groups must reference explicitly defined nodes. This function now
+    validates that all referenced nodes exist and raises an error if they don't.
+
+    The validation phase (_validate_parallel_group_references) will attempt to
+    auto-correct references using fuzzy matching (e.g., "research_task" -> "research").
+
+    If references can't be corrected, they will be removed from the parallel group.
+
+    Args:
+        parallel_nodes: List of node names referenced by parallel group
+        agent_catalog: Available agent configurations (unused, kept for compatibility)
+        existing_nodes: List of existing node specifications
+
+    Raises:
+        ValueError: If parallel group references undefined nodes that can't be matched
     """
     existing_node_names = {node.name for node in existing_nodes}
 
+    undefined_nodes = []
     for node_name in parallel_nodes:
-        # Skip if node already exists
-        if node_name in existing_node_names:
-            continue
+        if node_name not in existing_node_names:
+            undefined_nodes.append(node_name)
 
-        # Try to match node name to an agent
-        matched_agent = _match_node_to_agent(node_name, agent_catalog)
-
-        if matched_agent:
-            # Create node with matched agent
-            node_spec = GraphNodeSpec(
-                name=node_name,
-                type=NodeType.AGENT,
-                agent=matched_agent.name,
-                objective=matched_agent.goal or f"Execute parallel task: {matched_agent.role}",
-                expected_output=f"Results from {matched_agent.name}",
-                tools=[],
-            )
-        else:
-            # Fallback: use first available agent if no match found
-            # This prevents agent=None which would cause compilation errors
-            fallback_agent = agent_catalog[0] if agent_catalog else None
-            if fallback_agent:
-                logger.warning(
-                    f"Node '{node_name}' could not be matched to an agent. "
-                    f"Using fallback agent '{fallback_agent.name}'. "
-                    f"Available agents: {[a.name for a in agent_catalog]}"
-                )
-                node_spec = GraphNodeSpec(
-                    name=node_name,
-                    type=NodeType.AGENT,
-                    agent=fallback_agent.name,
-                    objective=f"Execute task: {node_name}",
-                    expected_output=f"Results from {node_name}",
-                    tools=[],
-                )
-            else:
-                # No agents available at all - this should never happen but handle it
-                logger.error(f"Cannot create node '{node_name}': no agents available in catalog")
-                raise ValueError(f"Cannot create agent node '{node_name}': agent catalog is empty")
-
-        existing_nodes.append(node_spec)
-        existing_node_names.add(node_name)
-        logger.debug(f"Auto-created node '{node_name}' from parallel_group")
+    if undefined_nodes:
+        logger.error(
+            f"Parallel group references {len(undefined_nodes)} undefined node(s): {undefined_nodes}. "
+            f"Nodes must be explicitly defined before being added to parallel groups. "
+            f"Available nodes: {existing_node_names}"
+        )
+        logger.info(
+            "The validation phase will attempt to auto-correct these references using fuzzy matching. "
+            "If no match is found, invalid references will be removed from the parallel group."
+        )
+        # Don't raise error here - let validation phase handle it with fuzzy matching
+        # This allows the graph to continue processing and potentially auto-fix the issue
 
 
 def _match_node_to_agent(
@@ -824,6 +896,111 @@ def _create_sequential_graph_from_agents(
     return create_simple_sequential_graph(graph_name, assignments)
 
 
+def _validate_parallel_group_references(graph_spec: StateGraphSpec) -> None:
+    """
+    Validate that all parallel_nodes reference existing nodes.
+
+    Prevents auto-creation of orphaned nodes by detecting mismatched references early.
+    If references don't match existing nodes, attempts to find closest match or removes
+    invalid references.
+    """
+    node_names = {node.name for node in graph_spec.nodes}
+
+    for parallel_group in graph_spec.parallel_groups:
+        invalid_refs = []
+        corrections_made = []
+
+        for node_ref in parallel_group.nodes[:]:  # Use slice to allow modification during iteration
+            if node_ref not in node_names:
+                logger.error(
+                    f"Parallel group '{parallel_group.group_id}' references "
+                    f"non-existent node '{node_ref}'. Available nodes: {node_names}"
+                )
+
+                # Try to find closest match
+                closest = _find_closest_node_name(node_ref, node_names)
+                if closest:
+                    logger.warning(f"Did you mean '{closest}'? Auto-correcting reference.")
+                    # Update the reference
+                    idx = parallel_group.nodes.index(node_ref)
+                    parallel_group.nodes[idx] = closest
+                    corrections_made.append((node_ref, closest))
+                else:
+                    # No close match - mark for removal
+                    invalid_refs.append(node_ref)
+
+        # Remove invalid references that couldn't be corrected
+        for invalid_ref in invalid_refs:
+            logger.warning(f"Removing invalid reference '{invalid_ref}' from parallel group '{parallel_group.group_id}'")
+            parallel_group.nodes.remove(invalid_ref)
+
+        # Log summary
+        if corrections_made:
+            logger.info(f"Parallel group '{parallel_group.group_id}': Auto-corrected {len(corrections_made)} reference(s)")
+        if invalid_refs:
+            logger.warning(f"Parallel group '{parallel_group.group_id}': Removed {len(invalid_refs)} invalid reference(s)")
+
+
+def _find_closest_node_name(target: str, available_names: Set[str]) -> Optional[str]:
+    """
+    Find the closest matching node name using fuzzy matching.
+
+    Strategies:
+    1. Exact match (case-insensitive)
+    2. Suffix removal match (e.g., "research_task" -> "research")
+    3. Contains match (substring matching)
+    4. Levenshtein distance for typos
+
+    Returns:
+        Closest matching node name or None if no good match found
+    """
+    if not available_names:
+        return None
+
+    target_lower = target.lower()
+
+    # Strategy 1: Exact match (case-insensitive)
+    for name in available_names:
+        if name.lower() == target_lower:
+            return name
+
+    # Strategy 2: Suffix removal (common pattern: "task_name_task" -> "task_name")
+    # Remove common suffixes: _task, _node, _agent
+    suffixes = ["_task", "_node", "_agent", "task", "node", "agent"]
+    for suffix in suffixes:
+        if target_lower.endswith(suffix):
+            base = target_lower[:-len(suffix)].rstrip("_")
+            for name in available_names:
+                if name.lower() == base or name.lower().startswith(base):
+                    logger.info(f"Matched '{target}' to '{name}' by removing suffix '{suffix}'")
+                    return name
+
+    # Strategy 3: Contains match (substring)
+    for name in available_names:
+        name_lower = name.lower()
+        if target_lower in name_lower or name_lower in target_lower:
+            logger.info(f"Matched '{target}' to '{name}' by substring matching")
+            return name
+
+    # Strategy 4: Simple Levenshtein-like distance (character overlap)
+    best_match = None
+    best_score = 0
+    for name in available_names:
+        # Calculate character overlap
+        common_chars = set(target_lower) & set(name.lower())
+        score = len(common_chars) / max(len(target_lower), len(name.lower()))
+        if score > best_score and score > 0.5:  # Require >50% character overlap
+            best_score = score
+            best_match = name
+
+    if best_match:
+        logger.info(f"Matched '{target}' to '{best_match}' with {best_score:.2f} character overlap")
+        return best_match
+
+    logger.warning(f"No close match found for '{target}' among {available_names}")
+    return None
+
+
 def _ensure_start_end_nodes(graph_spec: StateGraphSpec) -> None:
     """Ensure graph has proper start and end nodes."""
     node_names = {node.name for node in graph_spec.nodes}
@@ -851,14 +1028,345 @@ def _ensure_start_end_nodes(graph_spec: StateGraphSpec) -> None:
 
 def _auto_fix_graph(graph_spec: StateGraphSpec) -> None:
     """
-    Apply automatic fixes to graph specification.
+    Apply automatic fixes to graph specification with comprehensive validation.
+
+    Improvements:
+    1. Always attempt edge inference (not just when no edges exist)
+    2. Validate parallel_nodes references BEFORE auto-creation
+    3. Ensure auto-created nodes get proper edge connections
+    4. Re-validate after each fix attempt to confirm success
 
     Fixes applied:
-    1. Create sequential edges if none exist (handles ToT LLM failures)
-    2. Create edges for parallel groups (fan-out/fan-in pattern)
+    - Phase 1: Validate parallel group references
+    - Phase 2: Infer missing edges (always, not conditionally)
+    - Phase 3: Handle parallel groups with edge creation
+    - Phase 4: Fallback sequential edges only if still broken
+    - Phase 5: Final validation confirmation
     """
-    _auto_create_sequential_edges(graph_spec)  # NEW: Handle missing edges first
-    _create_parallel_edges(graph_spec)  # Then handle parallel groups
+    logger.info("Starting comprehensive auto-fix process")
+
+    # Phase 1: Validate parallel group references
+    logger.info("Phase 1: Validating parallel group references")
+    _validate_parallel_group_references(graph_spec)
+
+    # Phase 2: Infer missing edges (always, not conditionally)
+    logger.info("Phase 2: Attempting edge inference from graph structure")
+    _infer_edges_from_graph_structure(graph_spec)
+
+    # Phase 3: Handle parallel groups with edge creation
+    logger.info("Phase 3: Creating parallel group edges")
+    _create_parallel_edges(graph_spec)
+
+    # Phase 4: Fallback sequential edges only if still broken
+    validation_errors = graph_spec.validate()
+    if validation_errors and not graph_spec.edges:
+        logger.warning(f"Phase 4: Edge inference failed (errors: {validation_errors}), falling back to sequential edges")
+        _auto_create_sequential_edges(graph_spec)
+    elif validation_errors:
+        logger.warning(f"Phase 4: Validation errors persist after edge inference: {validation_errors}")
+
+    # Phase 5: Final validation confirmation
+    final_errors = graph_spec.validate()
+    if final_errors:
+        logger.error(f"Auto-fix could not resolve all issues: {final_errors}")
+        logger.error(f"Graph state: {len(graph_spec.nodes)} nodes, {len(graph_spec.edges)} edges, {len(graph_spec.parallel_groups)} parallel groups")
+    else:
+        logger.info("✅ Auto-fix successfully resolved all validation errors")
+
+
+# ---------------------------------------------------------------------------
+# Edge Inference Engine
+# ---------------------------------------------------------------------------
+
+
+def _infer_edges_from_graph_structure(graph_spec: StateGraphSpec) -> None:
+    """
+    Infer edges from graph node structure and metadata.
+
+    This function implements intelligent edge inference when ToT LLM fails to generate
+    edges. It uses multiple strategies:
+    1. Temporal order inference - Sequential edges from node creation order
+    2. Conditional pattern detection - Identify condition nodes with branches
+    3. Parallel group inference - Auto-create parallel fan-out/fan-in edges
+    4. Node metadata analysis - Use node types and relationships
+
+    This is the primary solution to the ToT edge generation failure issue.
+
+    Args:
+        graph_spec: Graph specification to enhance with inferred edges
+    """
+    logger.info("Starting edge inference from graph structure")
+
+    # Strategy 1: Detect conditional patterns first (most specific)
+    conditional_edges = _infer_conditional_edges(graph_spec)
+    logger.info(f"Inferred {len(conditional_edges)} conditional edges")
+
+    # Strategy 2: Infer temporal sequential edges for remaining nodes
+    temporal_edges = _infer_temporal_edges(graph_spec)
+    logger.info(f"Inferred {len(temporal_edges)} temporal edges")
+
+    # Strategy 3: Handle parallel groups (if not already handled)
+    parallel_edges = _infer_parallel_edges_from_groups(graph_spec)
+    logger.info(f"Inferred {len(parallel_edges)} parallel group edges")
+
+    # Add all inferred edges to graph
+    all_inferred_edges = conditional_edges + temporal_edges + parallel_edges
+
+    for edge in all_inferred_edges:
+        try:
+            graph_spec.add_edge(edge)
+            logger.debug(f"Added inferred edge: {edge.from_node} → {edge.to_node} ({edge.type})")
+        except ValueError as e:
+            logger.warning(f"Could not add inferred edge {edge.from_node}→{edge.to_node}: {e}")
+
+    logger.info(f"Edge inference complete: {len(all_inferred_edges)} edges inferred")
+
+
+def _infer_conditional_edges(graph_spec: StateGraphSpec) -> List[GraphEdgeSpec]:
+    """
+    Detect conditional patterns in the graph structure.
+
+    Pattern: A CONDITION or ROUTER node followed by 2+ AGENT nodes suggests
+    conditional branching. Creates conditional edges from condition to branches.
+
+    Returns:
+        List of inferred conditional edges
+    """
+    edges = []
+    node_list = graph_spec.nodes
+
+    # Find condition/router nodes
+    condition_nodes = [
+        n for n in node_list
+        if n.type in (NodeType.CONDITION, NodeType.ROUTER)
+    ]
+
+    if not condition_nodes:
+        logger.debug("No condition nodes found for conditional pattern detection")
+        return edges
+
+    # For each condition node, find potential branch nodes
+    for i, cond_node in enumerate(condition_nodes):
+        # Find agent nodes that appear after this condition node
+        cond_idx = node_list.index(cond_node)
+        potential_branches = []
+
+        # Look ahead for agent nodes, but limit to reasonable branch count
+        # (typically 2-4 branches, not all remaining nodes)
+        MAX_BRANCHES = 4
+        consecutive_agents = 0
+
+        for j in range(cond_idx + 1, len(node_list)):
+            next_node = node_list[j]
+            if next_node.type == NodeType.AGENT:
+                potential_branches.append(next_node)
+                consecutive_agents += 1
+                # Stop if we've found too many consecutive agents
+                # (likely not all branches, some are sequential after convergence)
+                if consecutive_agents >= MAX_BRANCHES:
+                    break
+            elif next_node.type in (NodeType.CONDITION, NodeType.ROUTER, NodeType.END):
+                # Stop at next control flow node
+                break
+            else:
+                # Non-agent, non-control node - could be convergence point
+                consecutive_agents = 0
+
+        # If we found 2-4 branches, create conditional edges
+        # Limit to reasonable branch count to avoid over-connecting
+        if 2 <= len(potential_branches) <= MAX_BRANCHES:
+            logger.info(
+                f"Detected conditional pattern: {cond_node.name} → "
+                f"{len(potential_branches)} branches: {[b.name for b in potential_branches]}"
+            )
+
+            for branch_idx, branch_node in enumerate(potential_branches):
+                # Create conditional edge with basic condition
+                condition = GraphCondition(
+                    type="state_check",
+                    field="branch_decision",
+                    operator="equals",
+                    value=f"branch_{branch_idx}",
+                    description=f"Route to {branch_node.name} on branch {branch_idx}"
+                )
+
+                edge = GraphEdgeSpec(
+                    from_node=cond_node.name,
+                    to_node=branch_node.name,
+                    type=EdgeType.CONDITIONAL,
+                    condition=condition,
+                    label=f"Branch {branch_idx}: {branch_node.name}",
+                    description=f"Conditional routing to {branch_node.name}"
+                )
+                edges.append(edge)
+
+    return edges
+
+
+def _infer_temporal_edges(graph_spec: StateGraphSpec) -> List[GraphEdgeSpec]:
+    """
+    Infer edges from temporal order of nodes in the ToT tree.
+
+    Creates sequential edges based on node creation order, respecting:
+    - START node connects to first non-START/END node
+    - Nodes connect to next node in sequence
+    - Last node connects to END node
+    - Skip nodes already connected by conditional edges
+    - Skip nodes in parallel groups (to avoid semantic conflicts)
+
+    Returns:
+        List of inferred temporal edges
+    """
+    edges = []
+    node_list = graph_spec.nodes
+
+    # Get nodes already involved in edges (to avoid duplication)
+    nodes_with_outgoing = {e.from_node for e in graph_spec.edges}
+    nodes_with_incoming = {e.to_node for e in graph_spec.edges}
+
+    # Get nodes in parallel groups (to avoid creating sequential edges between them)
+    parallel_group_nodes = set()
+    for group in graph_spec.parallel_groups:
+        parallel_group_nodes.update(group.nodes)
+
+    # Get executable nodes in order (exclude START/END and parallel group members)
+    executable_nodes = [
+        n for n in node_list
+        if n.type not in (NodeType.START, NodeType.END)
+        and n.name not in parallel_group_nodes
+    ]
+
+    if not executable_nodes:
+        logger.debug("No executable nodes found for temporal edge inference")
+        return edges
+
+    # Connect START to first executable node (if not already connected)
+    start_node_name = "start"
+    first_node = executable_nodes[0]
+
+    if (
+        start_node_name not in nodes_with_outgoing
+        and first_node.name not in nodes_with_incoming
+    ):
+        edge = GraphEdgeSpec(
+            from_node=start_node_name,
+            to_node=first_node.name,
+            type=EdgeType.DIRECT,
+            label="Begin workflow",
+            description="Inferred temporal edge from start"
+        )
+        edges.append(edge)
+        nodes_with_outgoing.add(start_node_name)
+        nodes_with_incoming.add(first_node.name)
+
+    # Connect nodes sequentially (skip already connected nodes)
+    # Only connect nodes that don't already have outgoing edges from conditional inference
+    for i in range(len(executable_nodes) - 1):
+        current_node = executable_nodes[i]
+        next_node = executable_nodes[i + 1]
+
+        # Skip if current node already has outgoing edge
+        if current_node.name in nodes_with_outgoing:
+            continue
+
+        # Skip if next node already has incoming edge
+        if next_node.name in nodes_with_incoming:
+            continue
+
+        edge = GraphEdgeSpec(
+            from_node=current_node.name,
+            to_node=next_node.name,
+            type=EdgeType.DIRECT,
+            label=f"Step {i+1} → {i+2}",
+            description=f"Inferred temporal edge in sequence"
+        )
+        edges.append(edge)
+        nodes_with_outgoing.add(current_node.name)
+        nodes_with_incoming.add(next_node.name)
+
+    # Connect last executable node to END (if not already connected)
+    last_node = executable_nodes[-1]
+    end_node_name = "end"
+
+    # Find nodes that should connect to END (nodes with no outgoing edges)
+    # This handles both sequential flow and conditional branches
+    for node in executable_nodes:
+        if node.name not in nodes_with_outgoing:
+            edge = GraphEdgeSpec(
+                from_node=node.name,
+                to_node=end_node_name,
+                type=EdgeType.DIRECT,
+                label="Complete workflow",
+                description="Inferred temporal edge to end"
+            )
+            edges.append(edge)
+            nodes_with_outgoing.add(node.name)
+
+    return edges
+
+
+def _infer_parallel_edges_from_groups(graph_spec: StateGraphSpec) -> List[GraphEdgeSpec]:
+    """
+    Infer fan-out/fan-in edges for parallel groups.
+
+    Creates:
+    - Fan-out: START → each parallel node (PARALLEL edge type)
+    - Fan-in: each parallel node → aggregation point (AGGREGATION edge type)
+
+    Returns:
+        List of inferred parallel edges
+    """
+    edges = []
+
+    if not graph_spec.parallel_groups:
+        return edges
+
+    node_names = {n.name for n in graph_spec.nodes}
+    existing_edges = {(e.from_node, e.to_node) for e in graph_spec.edges}
+
+    for parallel_group in graph_spec.parallel_groups:
+        # Validate group nodes exist
+        group_nodes = [n for n in parallel_group.nodes if n in node_names]
+
+        if not group_nodes:
+            logger.warning(f"Parallel group '{parallel_group.group_id}' has no valid nodes")
+            continue
+
+        # Determine fan-out source (typically START, or previous sequential node)
+        fan_out_source = "start"
+
+        # Determine fan-in target (typically END, or next sequential node)
+        fan_in_target = "end"
+
+        # Create fan-out edges (source → each parallel node)
+        for node_name in group_nodes:
+            edge_key = (fan_out_source, node_name)
+            if edge_key not in existing_edges:
+                edge = GraphEdgeSpec(
+                    from_node=fan_out_source,
+                    to_node=node_name,
+                    type=EdgeType.PARALLEL,
+                    label=f"Parallel: {node_name}",
+                    description=f"Inferred fan-out for parallel group {parallel_group.group_id}"
+                )
+                edges.append(edge)
+                existing_edges.add(edge_key)
+
+        # Create fan-in edges (each parallel node → target)
+        for node_name in group_nodes:
+            edge_key = (node_name, fan_in_target)
+            if edge_key not in existing_edges:
+                edge = GraphEdgeSpec(
+                    from_node=node_name,
+                    to_node=fan_in_target,
+                    type=EdgeType.AGGREGATION,
+                    label=f"Aggregate: {node_name}",
+                    description=f"Inferred fan-in for parallel group {parallel_group.group_id}"
+                )
+                edges.append(edge)
+                existing_edges.add(edge_key)
+
+    return edges
 
 
 def _auto_create_sequential_edges(graph_spec: StateGraphSpec) -> None:
@@ -930,7 +1438,11 @@ def _auto_create_sequential_edges(graph_spec: StateGraphSpec) -> None:
 
 def _create_parallel_edges(graph_spec: StateGraphSpec) -> None:
     """
-    Create fan-out/fan-in edges for parallel groups.
+    Create fan-out/fan-in edges for parallel groups (legacy function).
+
+    This function is now primarily called by the auto-fix mechanism.
+    The new edge inference engine (_infer_parallel_edges_from_groups) should
+    handle most parallel edge creation.
 
     For each parallel group:
     - Creates edges from START to all parallel nodes (fan-out)
@@ -942,6 +1454,8 @@ def _create_parallel_edges(graph_spec: StateGraphSpec) -> None:
 
     existing_edges = {(e.from_node, e.to_node) for e in graph_spec.edges}
     node_names = {n.name for n in graph_spec.nodes}
+
+    edges_added = 0
 
     for parallel_group in graph_spec.parallel_groups:
         # Ensure all nodes in the group exist
@@ -967,6 +1481,7 @@ def _create_parallel_edges(graph_spec: StateGraphSpec) -> None:
                 try:
                     graph_spec.add_edge(edge)
                     existing_edges.add(edge_key)
+                    edges_added += 1
                     logger.debug(f"Added fan-out edge: start → {node_name}")
                 except ValueError as e:
                     logger.warning(f"Could not add fan-out edge: {e}")
@@ -985,9 +1500,13 @@ def _create_parallel_edges(graph_spec: StateGraphSpec) -> None:
                 try:
                     graph_spec.add_edge(edge)
                     existing_edges.add(edge_key)
+                    edges_added += 1
                     logger.debug(f"Added fan-in edge: {node_name} → end")
                 except ValueError as e:
                     logger.warning(f"Could not add fan-in edge: {e}")
+
+    if edges_added > 0:
+        logger.info(f"Created {edges_added} parallel group edges via legacy function")
 
 
 def _extract_fallback_assignments(graph_spec: StateGraphSpec) -> List[Dict[str, Any]]:

@@ -4,11 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a unified AI Agents framework combining multiple production-ready components:
+This is a unified AI Agents framework combining production-ready components:
 
-- **PraisonAI**: Multi-agent AI framework with self-reflection, supporting 100+ LLMs and various execution patterns
+- **Orchestrator**: Scalable class-based architecture for multi-agent coordination with LangGraph execution and workflow engine
 - **Mem0**: Intelligent memory layer for AI agents with multi-level memory and graph database support (+26% accuracy, 91% faster, 90% fewer tokens vs full context)
-- **Orchestrator**: Scalable class-based architecture for multi-agent coordination with parallel execution and workflow engine
 - **Tree-of-Thought-LLM**: Advanced reasoning system for complex problem solving
 
 ## Development Commands
@@ -21,9 +20,7 @@ pip install uv
 uv pip install -e .
 
 # Install with specific features
-uv pip install -e .[all-basic]          # Basic setup with PraisonAI + Mem0
 uv pip install -e .[mem0-full]          # Complete Mem0 with all providers
-uv pip install -e .[praison-full]       # Complete PraisonAI with all interfaces
 uv pip install -e .[all-mem0]           # Development setup with testing
 ```
 
@@ -48,32 +45,23 @@ python -m orchestrator.ingestion.sample_loader \
 
 ### Testing Strategy
 
-The project uses example-driven testing with 100+ test files. Run individual examples rather than formal test runners:
+Run pytest for orchestrator tests:
 
 ```bash
-# Test PraisonAI Agents core functionality
-python PraisonAI/src/praisonai-agents/test_agent_simple.py
-python PraisonAI/src/praisonai-agents/test_async_sequential.py
-python PraisonAI/src/praisonai-agents/test_multi_agents.py
+# Run all tests
+pytest orchestrator/
 
-# Test memory systems
-python examples/memory/test_mem0_memory.py
-
-# Test specific features
-python PraisonAI/src/praisonai-agents/test_guardrails.py      # Guardrails system
-python PraisonAI/src/praisonai-agents/test_streaming.py      # Streaming responses
-python PraisonAI/src/praisonai-agents/test_self_reflection.py # Self-reflection
+# Test specific modules
+pytest orchestrator/factories/tests/
+pytest orchestrator/memory/tests/
 ```
 
 ### Quality Assurance
 
 ```bash
-# Lint code (when ruff is configured)
+# Lint code
 ruff check .
 ruff format .
-
-# Check syntax in PraisonAI agents
-python PraisonAI/src/praisonai-agents/check_syntax.py
 ```
 
 ## High-Level Architecture
@@ -81,7 +69,7 @@ python PraisonAI/src/praisonai-agents/check_syntax.py
 ### Core Design Patterns
 
 1. **Factory Pattern**: Dynamic agent and task creation via `AgentFactory` and `TaskFactory`
-2. **Strategy Pattern**: Pluggable memory providers (`hybrid`, `mem0`, `rag`) and LLM backends
+2. **Strategy Pattern**: Pluggable memory providers (`hybrid`, `mem0`, `rag`) and LangChain backend
 3. **Observer Pattern**: Callback systems for workflow events and progress tracking
 4. **Dependency Injection**: Configuration-driven component initialization with validation
 
@@ -122,8 +110,8 @@ python PraisonAI/src/praisonai-agents/check_syntax.py
 └─────────────────────────────────────────────────────────────────┘
                                 │
                     ┌─────────────────┐
-                    │ PraisonAI Core  │
-                    │   Agents        │
+                    │  LangGraph      │
+                    │  StateGraph     │
                     └─────────────────┘
 ```
 
@@ -137,29 +125,20 @@ python PraisonAI/src/praisonai-agents/check_syntax.py
 
 ## Key Components Deep Dive
 
-### PraisonAI Agents (`PraisonAI/src/praisonai-agents/`)
-
-**Core Classes**:
-- `Agent`: LLM-powered agent with self-reflection (1-3 iterations), tool calling, and guardrails
-- `Task`: Configurable tasks with Pydantic output, conditional execution, and context dependencies
-- `PraisonAIAgents`: Multi-agent orchestrator supporting sequential/hierarchical/parallel execution
-- `GuardrailResult`: Validation system for task outputs with automatic retry mechanisms
-
-**Self-Reflection System**: Agents automatically evaluate and improve their outputs through configurable iteration cycles.
-
-**Guardrails System**: Both function-based and LLM-based validation with automatic retry mechanisms.
-
 ### Orchestrator (`orchestrator/`)
 
-**Class-Based Architecture**: Modular design replacing 280+ line monolithic functions.
+**Class-Based Architecture**: Modular design for scalable multi-agent coordination.
 
 **Key Classes**:
 - `Orchestrator`: Main coordination class with workflow management
 - `AgentFactory`/`TaskFactory`: Dynamic component creation with template registry
 - `MemoryManager`: Unified interface for multiple memory providers
 - `WorkflowEngine`: DAG execution with parallel processing and metrics
+- `GraphFactory`: LangGraph StateGraph builder for agent orchestration
 
 **Agent Templates**: Router, Researcher, Analyst, Planner, StandardsAgent with specialized instructions.
+
+**LangChain Integration**: Native LangChain/LangGraph backend for agent creation and execution.
 
 ### Mem0 Integration (`mem0/`)
 
@@ -210,44 +189,18 @@ export RAG_VECTOR_PATH=.praison/memory/chroma_db
 # OpenAI (Default)
 export OPENAI_API_KEY=your_key_here
 
-# Alternative providers via PraisonAI
+# Alternative providers via LangChain
 export OPENAI_BASE_URL=http://localhost:11434/v1  # Ollama
 export OPENAI_BASE_URL=https://api.groq.com/openai/v1  # Groq
 ```
 
 ## Development Patterns
 
-### Agent Creation with Guardrails
-
-```python
-from praisonaiagents import Agent, GuardrailResult
-from typing import Tuple, Any
-
-def validate_output(task_output) -> GuardrailResult:
-    if "error" in task_output.raw.lower():
-        return GuardrailResult(success=False, error="Contains errors")
-    return GuardrailResult(success=True, result=task_output)
-
-agent = Agent(
-    name="ResearchAgent",
-    role="Research Specialist", 
-    goal="Gather comprehensive information",
-    backstory="Expert researcher with analytical skills",
-    llm="gpt-4o-mini",
-    self_reflect=True,
-    min_reflect=1,
-    max_reflect=3,
-    guardrail=validate_output,
-    max_guardrail_retries=3,
-    tools=[duckduckgo_tool, wikipedia_tool]
-)
-```
-
-### Orchestrator Usage
+### Agent Creation with LangChain
 
 ```python
 from orchestrator import Orchestrator, OrchestratorConfig
-from orchestrator.core.config import AgentConfig, TaskConfig
+from orchestrator.core.config import AgentConfig
 
 # Configuration-driven approach
 config = OrchestratorConfig(name="MyWorkflow")
@@ -277,33 +230,32 @@ memory.add(messages, user_id="user123", agent_id="researcher")
 memories = memory.search(query="previous research", user_id="user123", limit=5)
 
 # Graph-based queries (with Mem0 graph provider)
-related = memory.search(query="project dependencies", 
+related = memory.search(query="project dependencies",
                        filters={"memory_type": "fact"})
 ```
 
 ## Project Structure Navigation
 
 ```
-├── PraisonAI/                 # Core multi-agent framework
-│   ├── src/praisonai-agents/  # Agent system implementation
-│   └── examples/              # 100+ example notebooks and scripts
-├── mem0/                      # Memory layer for AI
-│   ├── mem0/                  # Core memory classes
-│   └── examples/              # Integration examples
-├── orchestrator/              # Scalable orchestration system
+├── orchestrator/              # Core orchestration system
 │   ├── core/                  # Main orchestrator classes
 │   ├── cli/                   # Command-line interface
 │   ├── memory/                # Memory management
+│   ├── factories/             # Agent and task factories
+│   ├── integrations/          # LangChain integration
 │   └── ingestion/             # Document processing pipeline
+├── mem0/                      # Memory layer for AI
+│   ├── mem0/                  # Core memory classes
+│   └── examples/              # Integration examples
 ├── tree-of-thought-llm/       # Advanced reasoning system
 └── examples/                  # Cross-system integration examples
 ```
 
 ## Key Dependencies
 
-- **Core**: `pydantic`, `rich`, `openai`, `praisonaiagents`
+- **Core**: `pydantic`, `rich`, `openai`
+- **LangChain**: `langchain`, `langgraph`, `langchain-openai`, `langchain-community`
 - **Memory**: `chromadb`, `mem0ai[graph]`, `neo4j`, `qdrant-client`
-- **LLM**: `litellm` for unified provider access
 - **Processing**: `pypdf`, `sentence-transformers`
 - **Development**: `uv` for fast dependency management, `ruff` for linting
 
@@ -311,7 +263,7 @@ related = memory.search(query="project dependencies",
 
 ### Adding New Agent Templates
 
-Add templates to `orchestrator/cli/main.py` in the `_build_chat_agents()` function following the existing pattern.
+Add templates to `orchestrator/factories/agent_factory.py` following the existing pattern.
 
 ### Creating Custom Memory Providers
 
@@ -323,7 +275,7 @@ Add new document templates in `orchestrator/ingestion/templates/` and update the
 
 ### Testing New Features
 
-Create example-driven tests following the pattern in `PraisonAI/src/praisonai-agents/test_*.py` files.
+Create pytest tests in appropriate `tests/` directories following the pattern in `orchestrator/factories/tests/`.
 
 ## Performance Optimization
 

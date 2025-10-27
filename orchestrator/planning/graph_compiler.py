@@ -158,11 +158,11 @@ class GraphCompiler:
             logger.debug(f"Executing start node: {node_spec.name}")
 
             # Build update dict with only modified fields
+            # Note: current_iteration removed - use state.execution_depth instead
+            # Note: current_node removed - caused concurrent write errors in parallel execution
             updates = {
-                "current_node": node_spec.name,
                 "execution_path": state.execution_path + [node_spec.name],
-                "node_outputs": {**state.node_outputs, node_spec.name: "Workflow initialized"},
-                "current_iteration": 0
+                "node_outputs": {**state.node_outputs, node_spec.name: "Workflow initialized"}
             }
 
             # Add start message if not present
@@ -179,14 +179,15 @@ class GraphCompiler:
             logger.debug(f"Executing end node: {node_spec.name}")
 
             # Build update dict with only modified fields
+            # Note: current_node removed - caused concurrent write errors in parallel execution
             updates = {
-                "current_node": node_spec.name,
                 "execution_path": state.execution_path + [node_spec.name],
                 "node_outputs": {**state.node_outputs, node_spec.name: "Workflow completed"}
             }
 
             # Generate final output if not already present
-            if not state.final_output and state.agent_outputs:
+            # Note: Using node_outputs instead of agent_outputs for reliability in parallel execution
+            if not state.final_output and state.node_outputs:
                 final_output = self._generate_final_output(state)
                 updates["final_output"] = final_output
                 updates["messages"] = [AIMessage(content=final_output)]
@@ -219,30 +220,61 @@ class GraphCompiler:
 
         def agent_function(state: OrchestratorState) -> Dict[str, Any]:
             try:
-                logger.debug(f"Executing agent node: {node_spec.name} (agent: {agent_name})")
+                # PHASE 3: Enhanced node-level logging
+                logger.info(f"┌{'─'*78}┐")
+                logger.info(f"│ 🎯 NODE EXECUTION: {node_spec.name[:70]:<70} │")
+                logger.info(f"├{'─'*78}┤")
+                logger.info(f"│ Agent: {agent_name:<71} │")
+                logger.info(f"│ Type: {node_spec.type.value:<72} │")
+                logger.info(f"│ Execution Path: {' → '.join(state.execution_path[-3:]):<60} │")
+                logger.info(f"│ Completed Agents: {len(state.completed_agents):<61} │")
+                logger.info(f"└{'─'*78}┘")
 
                 # Build task description
                 task_description = self._build_task_description(node_spec, state)
 
-                # Execute agent
-                result = agent.execute(task_description, {"state": asdict(state)})
+                # PHASE 3: Log task description
+                logger.info(f"📋 TASK FOR NODE '{node_spec.name}':")
+                logger.info(f"   Objective: {node_spec.objective}")
+                logger.info(f"   Expected Output: {node_spec.expected_output}")
+                logger.info(f"   Description Length: {len(task_description)} chars")
+                logger.debug(f"   Full Task Description:\n{task_description}")
 
-                logger.debug(f"Agent {agent_name} completed execution in node {node_spec.name}")
+                # PHASE 3: Log state context
+                logger.info(f"📊 STATE CONTEXT:")
+                logger.info(f"   Messages: {len(state.messages)}")
+                logger.info(f"   Previous Outputs: {list(state.agent_outputs.keys())}")
+                logger.info(f"   Execution Depth: {state.execution_depth}")
+
+                # Execute agent (agent's own execute() method will log details)
+                execution_context = {
+                    "state": asdict(state),
+                    "messages": state.messages,
+                    "node_outputs": state.node_outputs,
+                }
+                result = agent.execute(task_description, execution_context)
+
+                # PHASE 3: Log node completion
+                logger.info(f"✅ NODE COMPLETED: {node_spec.name}")
+                logger.info(f"   Result Length: {len(result)} chars")
+                logger.debug(f"   First 300 chars: {result[:300]}...")
 
                 # Return ONLY modified fields
+                # Note: current_iteration removed - use state.execution_depth or state.completed_count instead
+                # Note: current_node removed - caused concurrent write errors in parallel execution
                 return {
-                    "agent_outputs": {**state.agent_outputs, agent_name: result},
+                    "agent_outputs": {**state.agent_outputs, node_spec.name: result},
                     "node_outputs": {**state.node_outputs, node_spec.name: result},
-                    "completed_agents": state.completed_agents + [agent_name],
-                    "current_iteration": state.current_iteration + 1,
+                    "completed_agents": state.completed_agents + [f"{node_spec.name} ({agent_name})"],
                     "execution_path": state.execution_path + [node_spec.name],
-                    "current_node": node_spec.name,
                     "messages": [AIMessage(content=result)]  # add_messages will append
                 }
 
             except Exception as e:
                 error_msg = f"Agent {agent_name} failed in node {node_spec.name}: {str(e)}"
-                logger.error(error_msg)
+                logger.error(f"❌ NODE FAILED: {node_spec.name}")
+                logger.error(f"   Error: {error_msg}")
+                logger.exception("Full exception:")
                 return {
                     "errors": state.errors + [{
                         "node": node_spec.name,
@@ -272,8 +304,8 @@ class GraphCompiler:
             route = routing_result.get("route")
 
             # Return ONLY modified fields
+            # Note: current_node removed - caused concurrent write errors in parallel execution
             return {
-                "current_node": node_spec.name,
                 "execution_path": state.execution_path + [node_spec.name],
                 "router_decision": routing_result,
                 "current_route": route,
@@ -301,8 +333,8 @@ class GraphCompiler:
             updated_condition_results[node_spec.name] = condition_result
 
             # Return ONLY modified fields
+            # Note: current_node removed - caused concurrent write errors in parallel execution
             return {
-                "current_node": node_spec.name,
                 "execution_path": state.execution_path + [node_spec.name],
                 "node_outputs": {**state.node_outputs, node_spec.name: f"Condition result: {condition_result}"},
                 "condition_results": updated_condition_results
@@ -316,8 +348,8 @@ class GraphCompiler:
             logger.debug(f"Executing parallel coordinator: {node_spec.name}")
 
             # Return ONLY modified fields
+            # Note: current_node removed - caused concurrent write errors in parallel execution
             return {
-                "current_node": node_spec.name,
                 "execution_path": state.execution_path + [node_spec.name],
                 "parallel_execution_active": True,
                 "node_outputs": {**state.node_outputs, node_spec.name: "Parallel execution initiated"}
@@ -340,8 +372,8 @@ class GraphCompiler:
                 parallel_active = state.parallel_execution_active
 
             # Return ONLY modified fields
+            # Note: current_node removed - caused concurrent write errors in parallel execution
             return {
-                "current_node": node_spec.name,
                 "execution_path": state.execution_path + [node_spec.name],
                 "node_outputs": {**state.node_outputs, node_spec.name: output_message},
                 "parallel_execution_active": parallel_active
@@ -431,7 +463,26 @@ class GraphCompiler:
         # Add execution context
         if state.completed_agents:
             description_parts.append(f"Previous Agents: {', '.join(state.completed_agents)}")
-        
+
+        # Add recent node outputs for richer context (exclude current node)
+        if state.node_outputs:
+            recent_entries = [
+                (name, output)
+                for name, output in state.node_outputs.items()
+                if name != node_spec.name
+            ]
+            if recent_entries:
+                recent_snippets = []
+                for name, output in recent_entries[-3:]:
+                    text = output if isinstance(output, str) else str(output)
+                    text = text.strip()
+                    if len(text) > 280:
+                        text = f"{text[:277]}..."
+                    recent_snippets.append(f"{name}: {text}")
+                description_parts.append(
+                    "Recent Outputs:\n" + "\n".join(f"- {snippet}" for snippet in recent_snippets)
+                )
+
         return "\n\n".join(description_parts)
     
     def _llm_based_routing(self, node_spec: GraphNodeSpec, state: OrchestratorState) -> Dict[str, Any]:
@@ -465,21 +516,117 @@ class GraphCompiler:
             return {"route": "default", "method": "rule_based"}
     
     def _generate_final_output(self, state: OrchestratorState) -> str:
-        """Generate final output from agent results."""
-        if not state.agent_outputs:
+        """Generate synthesized final output from agent results using LLM.
+
+        Note: Uses node_outputs instead of agent_outputs for reliability in parallel execution.
+        node_outputs is more consistently updated across all node types.
+        """
+        if not state.node_outputs:
             return "No results generated."
-        
-        # Simple concatenation - could be enhanced with LLM summarization
-        results = []
-        for agent, output in state.agent_outputs.items():
-            results.append(f"**{agent}**: {output}")
-        
-        return "\n\n".join(results)
-    
+
+        # Filter out system nodes (start, end) to show only agent results
+        agent_results = {k: v for k, v in state.node_outputs.items()
+                        if k not in ['start', 'end'] and v != "Workflow initialized" and v != "Workflow completed"}
+
+        if not agent_results:
+            return "No results generated."
+
+        # Build synthesis prompt with user query and agent outputs
+        synthesis_prompt = self._build_synthesis_prompt(
+            user_query=state.input_prompt,
+            agent_outputs=agent_results
+        )
+
+        # Call LLM to synthesize final answer
+        synthesized_answer = self._synthesize_with_llm(synthesis_prompt)
+
+        # Return ONLY the synthesized text (no display - handled by DisplayAdapter)
+        return synthesized_answer
+
+    def _build_synthesis_prompt(self, user_query: str, agent_outputs: Dict[str, str]) -> str:
+        """Build synthesis prompt for LLM to create coherent final answer.
+
+        Args:
+            user_query: Original user query
+            agent_outputs: Dictionary mapping agent names to their outputs
+
+        Returns:
+            Formatted synthesis prompt string
+        """
+        # Format agent outputs for the prompt
+        formatted_outputs = "\n\n".join([
+            f"### Agent: {agent_name}\n{output}"
+            for agent_name, output in agent_outputs.items()
+        ])
+
+        return f"""You are a synthesis agent that creates coherent final answers from multi-agent workflows.
+
+Original User Query: {user_query}
+
+Agent Outputs:
+{formatted_outputs}
+
+Your Task:
+1. Analyze the user's original query and intent
+2. Review all agent outputs and extract key insights
+3. Synthesize a coherent, concise final answer that:
+   - Directly addresses the user's question
+   - Integrates insights from all agents
+   - Avoids redundancy and contradictions
+   - Provides a clear, actionable summary
+4. Format the answer in a professional, readable manner using markdown
+
+Do not include agent names or labels in your final answer. Present the information as a unified response.
+
+Final Answer:"""
+
+    def _synthesize_with_llm(self, prompt: str) -> str:
+        """Call LLM to synthesize final answer from agent outputs.
+
+        Args:
+            prompt: Synthesis prompt with user query and agent outputs
+
+        Returns:
+            Synthesized final answer
+        """
+        try:
+            # Import LLM from langchain integration
+            from ..integrations.langchain_integration import ChatOpenAI
+
+            # Create LLM instance with appropriate settings for synthesis
+            llm = ChatOpenAI(
+                model="gpt-4o-mini",
+                temperature=0.3  # Lower temperature for more focused synthesis
+            )
+
+            # Invoke LLM with synthesis prompt
+            result = llm.invoke(prompt)
+
+            # Extract and return synthesized content
+            synthesized_text = result.content.strip()
+
+            logger.info(f"Synthesis complete: {len(synthesized_text)} characters generated")
+            return synthesized_text
+
+        except Exception as e:
+            logger.error(f"LLM synthesis failed: {e}")
+            # Fallback to simple concatenation if synthesis fails
+            logger.warning("Falling back to simple concatenation due to synthesis error")
+            return "Synthesis failed. Please check agent outputs above for detailed results."
+
     def _aggregate_parallel_results(self, state: OrchestratorState) -> str:
-        """Aggregate results from parallel execution."""
-        # Simple aggregation strategy
-        parallel_outputs = [output for output in state.agent_outputs.values()]
+        """Aggregate results from parallel execution.
+
+        Note: Uses node_outputs instead of agent_outputs for reliability.
+        """
+        # Simple aggregation strategy - filter out system nodes
+        agent_results = {k: v for k, v in state.node_outputs.items()
+                        if k not in ['start', 'end'] and v != "Workflow initialized" and v != "Workflow completed"}
+
+        parallel_outputs = [
+            output if isinstance(output, str) else str(output)
+            for output in agent_results.values()
+        ]
         return f"Aggregated {len(parallel_outputs)} parallel results"
     
     def get_compiled_graph(self, graph_name: str) -> Optional[StateGraph]:

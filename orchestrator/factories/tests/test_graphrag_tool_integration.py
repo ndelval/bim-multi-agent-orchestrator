@@ -404,12 +404,12 @@ class TestLangGraphWorkflowWithTools:
 
         # Update state with tool result
         state.node_outputs["graph_rag_lookup"] = tool_result
-        state.current_iteration += 1
+        state.execution_path.append("graph_rag_lookup")  # Track execution instead of iteration
 
         # Validate state
         assert "graph_rag_lookup" in state.node_outputs
         assert len(state.node_outputs["graph_rag_lookup"]) > 0
-        assert state.current_iteration == 1
+        assert state.execution_depth == 1  # Use derived property instead of current_iteration
 
         logger.info("✓ Graph state with tool results successful")
 

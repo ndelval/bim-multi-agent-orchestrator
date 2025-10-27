@@ -14,6 +14,8 @@ from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Optional, Any, Union, Literal
 from enum import Enum
 
+from ..core.constants import MAX_GRAPH_ITERATIONS
+
 logger = logging.getLogger(__name__)
 
 
@@ -187,7 +189,7 @@ class StateGraphSpec:
     parallel_groups: List[ParallelGroup] = field(default_factory=list)
     
     # Global configuration
-    max_iterations: int = 100          # Maximum execution iterations
+    max_iterations: int = MAX_GRAPH_ITERATIONS  # Maximum execution iterations
     global_timeout: Optional[float] = None  # Overall execution timeout
     error_handling: str = "stop"      # Error handling strategy
     

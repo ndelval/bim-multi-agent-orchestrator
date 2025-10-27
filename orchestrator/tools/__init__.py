@@ -1,4 +1,4 @@
-"""Tool factories for PraisonAI agents."""
+"""Tool factories for orchestrator agents."""
 
 from .graph_rag_tool import create_graph_rag_tool
 

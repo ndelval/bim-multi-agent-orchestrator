@@ -4,13 +4,13 @@ Configuration management for the orchestrator system.
 
 import os
 import yaml
-import json
 from typing import Dict, Any, Optional, List, Union, Callable
 from pathlib import Path
 from dataclasses import dataclass, field
 from enum import Enum
 
 from .exceptions import ConfigurationError, ValidationError
+from .constants import DEFAULT_MAX_ITERATIONS
 
 
 class MemoryProvider(str, Enum):
@@ -55,12 +55,12 @@ class MemoryConfig:
 
         if self.provider == MemoryProvider.HYBRID:
             if not self.hybrid_vector_path:
-                self.hybrid_vector_path = ".praison/hybrid_chroma"
+                self.hybrid_vector_path = ".orchestrator/hybrid_chroma"
             if not self.hybrid_lexical_db_path:
-                self.hybrid_lexical_db_path = ".praison/hybrid_lexical.db"
+                self.hybrid_lexical_db_path = ".orchestrator/hybrid_lexical.db"
         elif self.provider == MemoryProvider.RAG:
             if not self.rag_db_path:
-                self.rag_db_path = ".praison/memory/chroma_db"
+                self.rag_db_path = ".orchestrator/memory/chroma_db"
 
 
 @dataclass
@@ -74,6 +74,7 @@ class AgentConfig:
     tools: Union[List[str], List[Callable]] = field(default_factory=list)  # PRIORITY 3 FIX: Support both strings and callables
     enabled: bool = True
     llm: Optional[str] = None  # LLM model identifier (e.g., "gpt-4o-mini")
+    mcp_servers: List[Any] = field(default_factory=list)  # MCP server configurations (MCPServerConfig instances)
 
 
 @dataclass
@@ -108,7 +109,7 @@ class OrchestratorConfig:
     tasks: List[TaskConfig] = field(default_factory=list)
     memory: Optional[MemoryConfig] = None
     verbose: int = 1  # Verbosity level (0=quiet, 1=normal, 2=debug)
-    max_iter: int = 25  # Maximum iterations for agent execution
+    max_iterations: int = DEFAULT_MAX_ITERATIONS  # Maximum iterations for agent execution
     user_id: str = "default_user"  # User ID for session tracking
     run_id: Optional[str] = None  # Run ID for execution tracking
     async_execution: bool = False  # Enable asynchronous execution

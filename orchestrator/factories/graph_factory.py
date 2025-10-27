@@ -1,7 +1,7 @@
 """
 Graph factory for creating LangGraph StateGraphs from agent configurations.
 
-This factory builds dynamic StateGraphs that can replace PraisonAI workflows
+This factory builds dynamic StateGraphs
 with more controlled, observable, and debuggable agent orchestration.
 """
 
@@ -10,6 +10,7 @@ import time
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Callable, Union
 from dataclasses import asdict
+import json
 
 from ..integrations.langchain_integration import (
     StateGraph,
@@ -283,11 +284,11 @@ class GraphFactory:
                 )
 
                 # Return ONLY modified fields
+                # Note: current_iteration removed - use state.execution_depth or state.completed_count instead
                 return {
                     "agent_outputs": {**state.agent_outputs, config.name: result},
                     "completed_agents": state.completed_agents + [config.name],
-                    "current_iteration": state.current_iteration + 1,
-                    "messages": [AIMessage(content=result)]  # add_messages will append
+                    "messages": [AIMessage(content=result)],  # add_messages will append
                 }
 
             except Exception as e:
@@ -303,12 +304,15 @@ class GraphFactory:
                 )
 
                 return {
-                    "errors": state.errors + [{
-                        "agent": config.name,
-                        "error": str(e),
-                        "timestamp": str(datetime.now())
-                    }],
-                    "error_state": f"Agent {config.name} failed: {str(e)}"
+                    "errors": state.errors
+                    + [
+                        {
+                            "agent": config.name,
+                            "error": str(e),
+                            "timestamp": str(datetime.now()),
+                        }
+                    ],
+                    "error_state": f"Agent {config.name} failed: {str(e)}",
                 }
 
         return agent_function
@@ -325,16 +329,50 @@ class GraphFactory:
                 prompt_lower = state.input_prompt.lower()
 
                 # Determine route based on keywords
-                if any(kw in prompt_lower for kw in ["quick", "simple", "hello", "hola", "hi"]):
+                if any(
+                    kw in prompt_lower
+                    for kw in ["quick", "simple", "hello", "hola", "hi"]
+                ):
                     route = "quick"
                     logger.info("[Router] Matched quick keyword for prompt")
-                elif any(kw in prompt_lower for kw in ["research", "search", "find", "investiga", "busca", "encuentra"]):
+                elif any(
+                    kw in prompt_lower
+                    for kw in [
+                        "research",
+                        "search",
+                        "find",
+                        "investiga",
+                        "busca",
+                        "encuentra",
+                    ]
+                ):
                     route = "research"
                     logger.info("[Router] Matched research keyword for prompt")
-                elif any(kw in prompt_lower for kw in ["analyze", "analysis", "deep", "detailed", "analiza", "analisis", "análisis", "detallado"]):
+                elif any(
+                    kw in prompt_lower
+                    for kw in [
+                        "analyze",
+                        "analysis",
+                        "deep",
+                        "detailed",
+                        "analiza",
+                        "analisis",
+                        "análisis",
+                        "detallado",
+                    ]
+                ):
                     route = "analysis"
                     logger.info("[Router] Matched analysis keyword for prompt")
-                elif any(kw in prompt_lower for kw in ["standard", "compliance", "norm", "norma", "cumplimiento"]):
+                elif any(
+                    kw in prompt_lower
+                    for kw in [
+                        "standard",
+                        "compliance",
+                        "norm",
+                        "norma",
+                        "cumplimiento",
+                    ]
+                ):
                     route = "standards"
                     logger.info("[Router] Matched standards keyword for prompt")
                 else:
@@ -349,19 +387,16 @@ class GraphFactory:
                     "router_decision": {
                         "route": route,
                         "confidence": 0.8,
-                        "reason": "Rule-based keyword matching"
+                        "reason": "Rule-based keyword matching",
                     },
-                    "messages": [AIMessage(content=f"Routing to: {route}")]
+                    "messages": [AIMessage(content=f"Routing to: {route}")],
                 }
 
             except Exception as e:
                 logger.error(f"Router function failed: {e}")
                 return {
                     "current_route": "analysis",  # Default route
-                    "errors": state.errors + [{
-                        "agent": "router",
-                        "error": str(e)
-                    }]
+                    "errors": state.errors + [{"agent": "router", "error": str(e)}],
                 }
 
         return router_function
@@ -395,17 +430,14 @@ class GraphFactory:
                 # Return ONLY modified fields
                 return {
                     "final_output": final_result,
-                    "execution_path": state.execution_path + ["completion"]
+                    "execution_path": state.execution_path + ["completion"],
                 }
 
             except Exception as e:
                 logger.error(f"Completion function failed: {e}")
                 return {
                     "final_output": "Error during completion",
-                    "errors": state.errors + [{
-                        "agent": "completion",
-                        "error": str(e)
-                    }]
+                    "errors": state.errors + [{"agent": "completion", "error": str(e)}],
                 }
 
         return completion_function
@@ -426,25 +458,65 @@ class GraphFactory:
                 - quick: Simple responses, greetings
                 - research: Information gathering, web search
                 - analysis: Deep analysis, reasoning
+                - planning: Complex tasks requiring ToT planning + multi-agent execution
                 - standards: Compliance, regulations
 
                 Respond with JSON: {{"route": "route_name", "confidence": 0.9, "reasoning": "why this route"}}
                 """
 
-                logger.debug("[RouterLLM] Sending routing prompt: %s", state.input_prompt)
+                logger.debug(
+                    "[RouterLLM] Sending routing prompt: %s", state.input_prompt
+                )
                 result = router_agent.execute(routing_prompt)
                 logger.debug("[RouterLLM] Raw router output: %s", result)
 
-                # Parse routing decision (simplified - could use JSON parsing)
+                # Parse routing decision with JSON first, fallback to keyword search
+                allowed_routes = {
+                    "quick",
+                    "research",
+                    "analysis",
+                    "planning",
+                    "standards",
+                }
                 route = "analysis"  # Default fallback
-                if "quick" in result.lower():
-                    route = "quick"
-                elif "research" in result.lower():
-                    route = "research"
-                elif "standards" in result.lower():
-                    route = "standards"
 
-                logger.info("Router agent selected route: %s (keyword extraction)", route)
+                parsed_route = None
+                try:
+                    parsed = json.loads(result)
+                    if isinstance(parsed, dict) and parsed.get("route"):
+                        parsed_route = str(parsed["route"]).strip().lower()
+                except json.JSONDecodeError:
+                    # Try extracting JSON from code block or text fragments
+                    import re
+
+                    json_match = re.search(r"\{.*\}", result, re.DOTALL)
+                    if json_match:
+                        try:
+                            parsed = json.loads(json_match.group(0))
+                            if isinstance(parsed, dict) and parsed.get("route"):
+                                parsed_route = str(parsed["route"]).strip().lower()
+                        except json.JSONDecodeError:
+                            parsed_route = None
+
+                if parsed_route in allowed_routes:
+                    route = parsed_route
+                else:
+                    lower_result = result.lower()
+                    if "planning" in lower_result:
+                        route = "planning"
+                    elif "quick" in lower_result:
+                        route = "quick"
+                    elif "research" in lower_result:
+                        route = "research"
+                    elif "standards" in lower_result:
+                        route = "standards"
+
+                if route not in allowed_routes:
+                    route = "analysis"
+
+                logger.info(
+                    "Router agent selected route: %s (keyword extraction)", route
+                )
 
                 # Return ONLY modified fields
                 return {
@@ -453,7 +525,7 @@ class GraphFactory:
                         "route": route,
                         "agent_reasoning": result,
                     },
-                    "messages": [AIMessage(content=f"Router LLM selected: {route}")]
+                    "messages": [AIMessage(content=f"Router LLM selected: {route}")],
                 }
 
             except Exception as e:
@@ -461,11 +533,9 @@ class GraphFactory:
                 logger.exception("Router agent execution failed", exc_info=e)
                 return {
                     "current_route": "analysis",
-                    "errors": state.errors + [{
-                        "agent": "router_agent",
-                        "error": str(e)
-                    }],
-                    "error_state": f"Router agent failed: {str(e)}"
+                    "errors": state.errors
+                    + [{"agent": "router_agent", "error": str(e)}],
+                    "error_state": f"Router agent failed: {str(e)}",
                 }
 
         return router_agent_function
@@ -508,22 +578,19 @@ class GraphFactory:
                 result = agent.execute(task_description, {"state": asdict(state)})
 
                 # Return ONLY modified fields
+                # Note: current_iteration removed - use state.execution_depth or state.completed_count instead
                 return {
                     "agent_outputs": {**state.agent_outputs, config.name: result},
                     "completed_agents": state.completed_agents + [config.name],
-                    "current_iteration": state.current_iteration + 1,
                     "messages": [AIMessage(content=result)],
-                    "execution_path": state.execution_path + [config.name]
+                    "execution_path": state.execution_path + [config.name],
                 }
 
             except Exception as e:
                 logger.error(f"Sequential agent {config.name} failed: {e}")
                 return {
-                    "errors": state.errors + [{
-                        "agent": config.name,
-                        "error": str(e),
-                        "position": position
-                    }]
+                    "errors": state.errors
+                    + [{"agent": config.name, "error": str(e), "position": position}]
                 }
 
         return sequential_agent_function

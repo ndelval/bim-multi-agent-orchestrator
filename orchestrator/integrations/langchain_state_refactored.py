@@ -12,6 +12,7 @@ import traceback
 import logging
 
 from langchain_core.messages import BaseMessage
+from orchestrator.core.constants import EXECUTION_PATH_DISPLAY_LIMIT
 from orchestrator.core.exceptions import (
     ValidationError,
     TaskExecutionError,
@@ -374,7 +375,7 @@ class OrchestratorState:
         return {
             "iteration": f"{self.current_iteration}/{self.max_iterations}",
             "completed_agents": len(self.completed_agents),
-            "execution_path": " -> ".join(self.execution_path[-5:]),  # Last 5 nodes
+            "execution_path": " -> ".join(self.execution_path[-EXECUTION_PATH_DISPLAY_LIMIT:]),  # Last N nodes
             "has_error": self.has_error(),
             "current_route": self.current_route,
             "parallel_active": self.parallel_execution_active

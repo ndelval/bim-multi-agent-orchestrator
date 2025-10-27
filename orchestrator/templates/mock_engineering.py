@@ -138,7 +138,7 @@ def create_mock_engineering_config() -> OrchestratorConfig:
     execution_config = ExecutionConfig(
         process=ProcessType.WORKFLOW,
         verbose=1,
-        max_iter=4,
+        max_iterations=4,
         memory=False,
         user_id="mock-user",
         async_execution=False,

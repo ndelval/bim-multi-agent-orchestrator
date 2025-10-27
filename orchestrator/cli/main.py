@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Enhanced CLI for PraisonAI-based orchestrator with real-time Rich display.
+Enhanced CLI for StateGraph-based orchestrator with real-time Rich display.
 Provides chat and info commands with comprehensive memory integration.
 """
 
@@ -26,12 +26,9 @@ from orchestrator.memory.providers.registry import MemoryProviderRegistry
 from orchestrator.factories.agent_factory import AgentFactory
 from orchestrator.factories.task_factory import TaskFactory
 
-try:
-    from praisonaiagents.tools.duckduckgo import duckduckgo_tool
-    from praisonaiagents.tools.wikipedia import wikipedia_tool
-except ImportError:
-    duckduckgo_tool = None
-    wikipedia_tool = None
+# Tools are now provided by LangChain integration
+duckduckgo_tool = None
+wikipedia_tool = None
 
 # Import Rich display event system
 from orchestrator.cli.events import (
@@ -419,232 +416,9 @@ def _extract_decision(output: Any) -> Optional[str]:
 
 def run_chat(args: argparse.Namespace) -> int:
     """Run interactive chat with the orchestrator."""
-    _setup_logging(args.verbose)
-    console = Console()
-
-    # Initialize Rich display
-    rich_display = RichWorkflowDisplay()
-
-    # Welcome message
-    console.print(
-        Panel(
-            "[bold cyan]PraisonAI Multi-Agent Orchestrator[/bold cyan]\n"
-            f"Memory Provider: {args.memory_provider}\n"
-            f"Backend: {args.backend}\n"
-            "Type 'exit' or 'quit' to end the session.",
-            title="Welcome",
-            border_style="green",
-        )
-    )
-
-    # Initialize memory manager
-    try:
-        from orchestrator.core.config import (
-            MemoryConfig,
-            MemoryProvider,
-            EmbedderConfig,
-        )
-
-        # Create memory configuration with proper config object pattern
-        memory_config = MemoryConfig(
-            provider=MemoryProvider(args.memory_provider.lower()),
-            use_embedding=True,
-            embedder=EmbedderConfig(
-                provider="openai", config={"model": "text-embedding-3-large"}
-            ),
-            config={},
-        )
-
-        memory_manager = MemoryManager(config=memory_config)
-        console.print("[green]✓ Memory provider initialized[/green]")
-    except Exception as e:
-        console.print(f"[red]✗ Failed to initialize memory: {str(e)}[/red]")
-        logger.exception("Memory initialization failed")
-        return 1
-
-    # Build agents
-    try:
-        (
-            router_config,
-            researcher_config,
-            analyst_config,
-            planner_config,
-            standards_config,
-        ) = _build_chat_agents(memory_manager, use_tools=True)
-        console.print("[green]✓ Agent configurations ready[/green]\n")
-    except Exception as e:
-        console.print(f"[red]✗ Failed to build agents: {str(e)}[/red]")
-        return 1
-
-    # Prepare backend adapter
-    if args.backend == "langgraph":
-        adapter = GraphAgentAdapter(
-            memory_manager=memory_manager,
-            llm=args.llm,
-            enable_parallel=True,
-        )
-        console.print("[cyan]Using LangGraph backend with parallel execution[/cyan]\n")
-    elif args.backend == "praisonai":
-        adapter = GraphAgentAdapter(
-            memory_manager=memory_manager,
-            llm=args.llm,
-            enable_parallel=False,
-        )
-        console.print(
-            "[cyan]Using PraisonAI backend with sequential execution[/cyan]\n"
-        )
-    else:
-        console.print(f"[red]Unknown backend: {args.backend}[/red]")
-        return 1
-
-    # Chat loop
-    while True:
-        try:
-            # Get user input
-            user_query = console.input("\n[bold blue]You:[/bold blue] ").strip()
-
-            if not user_query:
-                continue
-
-            if user_query.lower() in ["exit", "quit"]:
-                console.print("[yellow]Goodbye![/yellow]")
-                break
-
-            # Clear previous workflow display
-            rich_display.clear()
-
-            # === ROUTER PHASE ===
-            try:
-                router_result = adapter.run_single_agent(
-                    agent_config=router_config,
-                    user_query=user_query,
-                )
-            except Exception as e:
-                console.print(f"[red]✗ Router execution failed: {str(e)}[/red]")
-                logger.exception("Router execution error")
-                continue
-
-            # Extract decision from router result
-            router_raw_text = _extract_text(router_result)
-            payload = _parse_router_payload(router_raw_text)
-
-            decision = payload.get("decision")
-            if not decision:
-                decision = _extract_decision(router_result)
-
-            # PHASE 2 FIX: Replace silent fallback with logged fallback
-            if not decision:
-                logger.error(
-                    "Router decision extraction failed - no decision found in result"
-                )
-                logger.debug(
-                    f"Router result type: {type(router_result)}, content: {router_result}"
-                )
-                decision = "quick"  # Explicit fallback with logging
-            else:
-                decision = decision.lower()
-
-            # Emit router decision event and show Rich display
-            confidence = payload.get("confidence", "Medium")
-            rationale = payload.get("rationale", "Router analysis completed")
-            latency = payload.get("latency", 0)
-            if rich_display:
-                emit_router_decision(
-                    decision=decision,
-                    confidence=confidence,
-                    rationale=rationale,
-                    latency=latency,
-                )
-
-            # === EXECUTION PHASE ===
-            final_answer = None
-
-            if decision == "quick":
-                # Quick path: Single researcher agent
-                if rich_display:
-                    emit_agent_start("Researcher", "Gathering information")
-
-                try:
-                    researcher_result = adapter.run_single_agent(
-                        agent_config=researcher_config,
-                        user_query=user_query,
-                    )
-                    final_answer = _extract_text(researcher_result)
-
-                    if rich_display:
-                        emit_agent_complete("Researcher", "Research completed")
-                except Exception as e:
-                    console.print(f"[red]✗ Researcher execution failed: {str(e)}[/red]")
-                    logger.exception("Researcher execution error")
-                    continue
-
-            elif decision == "analysis":
-                # Analysis path: Multi-agent workflow
-                agent_sequence = ["Researcher", "Analyst", "StandardsAgent"]
-
-                try:
-                    workflow_result = adapter.run_multi_agent_workflow(
-                        agent_sequence=agent_sequence,
-                        user_query=user_query,
-                        rich_display=rich_display,
-                    )
-                    final_answer = _extract_text(workflow_result)
-                except Exception as e:
-                    console.print(f"[red]✗ Multi-agent workflow failed: {str(e)}[/red]")
-                    logger.exception("Multi-agent workflow error")
-                    continue
-
-            elif decision == "planning":
-                # Planning path: ToT planner + multi-agent
-                console.print(
-                    "[yellow]⚠ Planning path with ToT is not yet implemented[/yellow]"
-                )
-
-                # Fallback to analysis path
-                agent_sequence = ["Researcher", "Analyst", "Planner", "StandardsAgent"]
-
-                try:
-                    workflow_result = adapter.run_multi_agent_workflow(
-                        agent_sequence=agent_sequence,
-                        user_query=user_query,
-                        rich_display=rich_display,
-                    )
-                    final_answer = _extract_text(workflow_result)
-                except Exception as e:
-                    console.print(f"[red]✗ Planning workflow failed: {str(e)}[/red]")
-                    logger.exception("Planning workflow error")
-                    continue
-
-            else:
-                console.print(f"[red]✗ Unknown decision: {decision}[/red]")
-                continue
-
-            # Display final answer
-            if final_answer:
-                if rich_display:
-                    emit_final_answer(final_answer)
-                else:
-                    console.print("\n" + "=" * 80)
-                    console.print(
-                        Panel(
-                            Markdown(final_answer),
-                            title="Final Answer",
-                            border_style="green",
-                        )
-                    )
-                    console.print("=" * 80)
-            else:
-                console.print("[yellow]⚠ No answer generated[/yellow]")
-
-        except KeyboardInterrupt:
-            console.print("\n[yellow]Interrupted by user[/yellow]")
-            break
-        except Exception as e:
-            console.print(f"[red]✗ Unexpected error: {str(e)}[/red]")
-            logger.exception("Unexpected error in chat loop")
-            continue
-
-    return 0
+    from .chat_orchestrator import ChatOrchestrator
+    orchestrator = ChatOrchestrator(args)
+    return orchestrator.run()
 
 
 def main() -> int:
@@ -653,7 +427,7 @@ def main() -> int:
     load_dotenv()
 
     parser = argparse.ArgumentParser(
-        description="PraisonAI Multi-Agent Orchestrator CLI",
+        description="Multi-Agent Orchestrator CLI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
@@ -672,7 +446,7 @@ def main() -> int:
         "--backend",
         type=str,
         default="langgraph",
-        choices=["langgraph", "praisonai"],
+        choices=["langgraph"],
         help="Agent backend to use (default: langgraph)",
     )
     chat_parser.add_argument(

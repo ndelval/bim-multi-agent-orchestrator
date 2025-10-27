@@ -1,102 +1,125 @@
 """
-Agent factory for creating and managing agents with registry pattern.
+Agent factory for creating and managing agents.
 
-This module now supports mode-based agent creation via the Strategy Pattern.
-Backends (LangChain, PraisonAI) are selected at runtime via the mode parameter.
+This module provides agent creation using LangChain/LangGraph integration.
+Simplified from previous Strategy Pattern implementation.
 """
 
-from typing import Dict, Type, List, Any, Optional, Callable
+from typing import Dict, List, Any, Optional, Callable
 from abc import ABC, abstractmethod
 import logging
+import asyncio
 
 from ..core.config import AgentConfig
 from ..core.exceptions import AgentCreationError, TemplateError
-from .agent_backends import AgentBackend, BackendRegistry
 
-# Maintain backward compatibility with global flag for existing code
+# Import MCP components (optional - graceful degradation if not available)
 try:
-    from ..integrations.langchain_integration import LangChainAgent as Agent
-    USING_LANGCHAIN = True
+    from ..mcp import MCPClientManager, MCPToolAdapter, MCPServerConfig
+    MCP_AVAILABLE = True
 except ImportError:
-    from ..integrations.praisonai import Agent
-    USING_LANGCHAIN = False
+    MCPClientManager = None
+    MCPToolAdapter = None
+    MCPServerConfig = None
+    MCP_AVAILABLE = False
+
+# Import LangChain components - required
+from ..integrations.langchain_integration import LangChainAgent as Agent
+
+# Import LangChain tools - optional
+try:
+    from ..integrations.langchain_integration import DuckDuckGoSearchRun
+    DUCKDUCKGO_AVAILABLE = True
+except ImportError:
+    DuckDuckGoSearchRun = None
+    DUCKDUCKGO_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
-logger.info(f"AgentFactory module loaded (backward compat mode: {'LangChain' if USING_LANGCHAIN else 'PraisonAI'})")
+logger.info("AgentFactory module loaded with direct LangChain integration")
 
 
 class BaseAgentTemplate(ABC):
-    """Base class for agent templates with mode-aware backend support.
+    """Base class for agent templates.
 
-    Templates now use the Strategy Pattern to delegate agent creation
-    to pluggable backends (LangChain, PraisonAI, etc.) based on mode.
+    Templates provide default configurations for different agent types
+    and handle agent creation using direct LangChain integration.
     """
 
-    def __init__(self, backend_registry: Optional[BackendRegistry] = None):
-        """Initialize template with backend registry.
-
-        Args:
-            backend_registry: Registry of available backends (auto-created if None)
-        """
-        self._backend_registry = backend_registry or BackendRegistry()
-
-    def create_agent(self, config: AgentConfig, mode: Optional[str] = None, **kwargs) -> Any:
-        """Create an agent from configuration using specified backend mode.
+    def create_agent(self, config: AgentConfig, **kwargs) -> Agent:
+        """Create an agent from configuration using LangChain.
 
         Args:
             config: Agent configuration
-            mode: Backend mode ('langchain', 'praisonai', or None for auto-detect)
-            **kwargs: Additional arguments passed to backend
+            **kwargs: Additional arguments (llm, tools, etc.)
 
         Returns:
-            Created agent instance
+            Created LangChainAgent instance
 
         Raises:
             AgentCreationError: If agent creation fails
         """
-        # Auto-detect mode if not specified
-        if mode is None:
-            mode = self._detect_default_mode()
-
-        # Get backend strategy
-        backend = self._backend_registry.get(mode)
-        if backend is None:
-            available = self._backend_registry.available_backends()
-            raise AgentCreationError(
-                f"Backend mode '{mode}' not available. "
-                f"Available modes: {available}"
-            )
-
-        # Prepare tools if needed
-        tools = kwargs.get('tools')
-        if not tools and config.tools:
-            tools = backend.get_tools(config.tools)
-            kwargs['tools'] = tools
-
-        # Delegate to backend
         try:
-            agent = backend.create_agent(config, **kwargs)
-            logger.info(f"Created agent '{config.name}' using {mode} backend")
+            # Extract parameters
+            llm = kwargs.get('llm', config.llm or 'gpt-4o-mini')
+            tools = kwargs.get('tools') or self._resolve_tools(config.tools)
+
+            # Create LangChain agent directly
+            agent = Agent(
+                name=config.name,
+                role=config.role,
+                goal=config.goal,
+                backstory=config.backstory,
+                instructions=config.instructions or "",
+                llm=llm,
+                tools=tools
+            )
+            logger.info(f"Created LangChain agent: {config.name}")
             return agent
+
         except Exception as e:
+            logger.error(f"Failed to create agent '{config.name}': {e}")
             raise AgentCreationError(
-                f"Failed to create agent '{config.name}' with {mode} backend: {str(e)}"
+                f"Failed to create agent '{config.name}': {str(e)}"
             )
 
-    def _detect_default_mode(self) -> str:
-        """Auto-detect preferred backend mode.
+    def _resolve_tools(self, tool_names: List[str]) -> List[Any]:
+        """Resolve tool names to LangChain tool instances.
+
+        Args:
+            tool_names: List of tool identifiers or callable instances
 
         Returns:
-            Default mode name
-
-        Raises:
-            RuntimeError: If no backends available
+            List of LangChain tool instances
         """
-        backend = self._backend_registry.get_default_backend()
-        if backend is None:
-            raise RuntimeError("No agent backends available")
+        tools = []
+        for item in tool_names:
+            # Handle callable tools (e.g., dynamic tools from MCP)
+            if callable(item) and not isinstance(item, str):
+                try:
+                    from langchain.tools import Tool as LangChainTool
+                    tool_name = getattr(item, '__name__', 'dynamic_tool')
+                    tool_desc = getattr(item, '__doc__', 'Dynamic tool')
+                    wrapped = LangChainTool(
+                        name=tool_name,
+                        description=tool_desc or f"Tool: {tool_name}",
+                        func=item
+                    )
+                    tools.append(wrapped)
+                    logger.debug(f"Wrapped dynamic tool: {wrapped.name}")
+                except Exception as e:
+                    logger.warning(f"Failed to wrap dynamic tool: {e}")
 
-        return backend.backend_name
+            # Handle string tool names
+            elif item == "duckduckgo" and DUCKDUCKGO_AVAILABLE:
+                try:
+                    tools.append(DuckDuckGoSearchRun())
+                    logger.debug("Added DuckDuckGo search tool")
+                except Exception as e:
+                    logger.warning(f"Failed to add DuckDuckGo tool: {e}")
+            elif isinstance(item, str):
+                logger.debug(f"Unknown tool name: {item}")
+
+        return tools
 
     @abstractmethod
     def get_default_config(self) -> AgentConfig:
@@ -260,60 +283,45 @@ class WriterAgentTemplate(BaseAgentTemplate):
 
 
 class AgentFactory:
-    """Factory for creating agents with registry pattern and mode support.
+    """Factory for creating agents using LangChain integration.
 
-    The factory now supports multiple backend modes (langchain, praisonai)
-    via the Strategy Pattern. Mode can be specified per-agent or set as default.
+    Simplified factory that creates agents directly without backend abstraction.
+    All agents are created using LangChain/LangGraph.
 
     Example:
-        # Auto-detect mode (prefers LangChain)
         factory = AgentFactory()
-
-        # Explicit default mode
-        factory = AgentFactory(default_mode="praisonai")
-
-        # Per-agent mode override
-        agent = factory.create_agent(config, mode="langchain")
+        agent = factory.create_agent(config)
     """
 
-    def __init__(self, default_mode: Optional[str] = None):
-        """Initialize the agent factory.
-
-        Args:
-            default_mode: Default backend mode ('langchain' or 'praisonai').
-                         If None, auto-detects based on available backends.
-        """
+    def __init__(self):
+        """Initialize the agent factory with LangChain integration."""
         self._templates: Dict[str, BaseAgentTemplate] = {}
-        self._backend_registry = BackendRegistry()
-        self._default_mode = default_mode or self._detect_default_mode()
         self._register_default_templates()
-        logger.info(f"AgentFactory initialized with default mode: {self._default_mode}")
-    
-    def _detect_default_mode(self) -> str:
-        """Auto-detect default backend mode.
 
-        Returns:
-            Default mode name (prefers 'langchain', falls back to 'praisonai')
+        # Initialize MCP components if available
+        self._mcp_client_manager: Optional[MCPClientManager] = None
+        self._mcp_tool_adapter: Optional[MCPToolAdapter] = None
+        if MCP_AVAILABLE:
+            try:
+                self._mcp_client_manager = MCPClientManager()
+                self._mcp_tool_adapter = MCPToolAdapter(self._mcp_client_manager)
+                logger.info("MCP support enabled in AgentFactory")
+            except Exception as e:
+                logger.warning(f"Failed to initialize MCP support: {e}")
+                self._mcp_client_manager = None
+                self._mcp_tool_adapter = None
 
-        Raises:
-            RuntimeError: If no backends available
-        """
-        backend = self._backend_registry.get_default_backend()
-        if backend is None:
-            raise RuntimeError("No agent backends available")
-
-        return backend.backend_name
+        logger.info("AgentFactory initialized with direct LangChain integration")
 
     def _register_default_templates(self) -> None:
         """Register default agent templates."""
-        # Pass backend registry to templates for consistency
         default_templates = [
-            OrchestratorAgentTemplate(self._backend_registry),
-            ResearcherAgentTemplate(self._backend_registry),
-            PlannerAgentTemplate(self._backend_registry),
-            ImplementerAgentTemplate(self._backend_registry),
-            TesterAgentTemplate(self._backend_registry),
-            WriterAgentTemplate(self._backend_registry)
+            OrchestratorAgentTemplate(),
+            ResearcherAgentTemplate(),
+            PlannerAgentTemplate(),
+            ImplementerAgentTemplate(),
+            TesterAgentTemplate(),
+            WriterAgentTemplate()
         ]
 
         for template in default_templates:
@@ -340,68 +348,29 @@ class AgentFactory:
     def list_templates(self) -> List[str]:
         """List all registered agent templates."""
         return list(self._templates.keys())
-
-    def set_default_mode(self, mode: str) -> None:
-        """Set default backend mode for factory.
-
-        Args:
-            mode: Backend mode name ('langchain' or 'praisonai')
-
-        Raises:
-            ValueError: If mode is not available
-        """
-        available = self._backend_registry.available_backends()
-        if mode not in available:
-            raise ValueError(
-                f"Invalid mode '{mode}'. Available modes: {available}"
-            )
-
-        self._default_mode = mode
-        logger.info(f"Set default agent backend mode to: {mode}")
-
-    def get_default_mode(self) -> str:
-        """Get current default backend mode.
-
-        Returns:
-            Current default mode name
-        """
-        return self._default_mode
-
-    def get_available_modes(self) -> List[str]:
-        """Get list of available backend modes.
-
-        Returns:
-            List of mode names (e.g., ['langchain', 'praisonai'])
-        """
-        return self._backend_registry.available_backends()
     
     def create_agent(
         self,
         config: AgentConfig,
         agent_type: Optional[str] = None,
-        mode: Optional[str] = None,
         **kwargs
-    ) -> Any:
-        """Create an agent from configuration.
+    ) -> Agent:
+        """Create an agent from configuration using LangChain.
 
         Args:
             config: Agent configuration
             agent_type: Override agent type (defaults to inferring from role/name)
-            mode: Backend mode ('langchain', 'praisonai', or None for factory default)
-            **kwargs: Additional arguments to pass to agent creation
+            **kwargs: Additional arguments to pass to agent creation (llm, tools, etc.)
 
         Returns:
-            Created agent instance
+            Created LangChainAgent instance
 
         Raises:
             AgentCreationError: If agent creation fails
 
         Example:
-            # Use factory default mode
+            factory = AgentFactory()
             agent = factory.create_agent(config)
-
-            # Override with specific mode
-            agent = factory.create_agent(config, mode="langchain")
         """
         # Determine agent type
         if agent_type is None:
@@ -412,14 +381,28 @@ class AgentFactory:
         if template is None:
             raise AgentCreationError(f"No template found for agent type: {agent_type}")
 
-        # Use factory default mode if not specified
-        if mode is None:
-            mode = self._default_mode
+        # Process MCP servers if configured
+        mcp_tools = []
+        if config.mcp_servers and self._mcp_tool_adapter:
+            try:
+                mcp_tools = self._create_mcp_tools(config.mcp_servers)
+                logger.info(f"Created {len(mcp_tools)} MCP tool(s) for agent '{config.name}'")
+            except Exception as e:
+                logger.warning(f"Failed to create MCP tools for '{config.name}': {e}")
 
-        # Create agent with specified mode
+        # Merge MCP tools with existing tools
+        if mcp_tools:
+            if isinstance(config.tools, list):
+                from copy import deepcopy
+                config = deepcopy(config)
+                config.tools = list(config.tools) + mcp_tools
+            else:
+                logger.warning(f"Agent '{config.name}' has non-list tools, skipping MCP tool merge")
+
+        # Create agent using LangChain
         try:
-            agent = template.create_agent(config, mode=mode, **kwargs)
-            logger.info(f"Created agent '{config.name}' of type '{agent_type}' using {mode} backend")
+            agent = template.create_agent(config, **kwargs)
+            logger.info(f"Created agent '{config.name}' of type '{agent_type}' using LangChain")
             return agent
         except Exception as e:
             raise AgentCreationError(f"Failed to create agent '{config.name}': {str(e)}")
@@ -433,6 +416,159 @@ class AgentFactory:
                 agents.append(agent)
         return agents
     
+    def _create_mcp_tools(self, mcp_servers: List[Any]) -> List[Callable]:
+        """
+        Create tools from MCP server configurations.
+
+        Args:
+            mcp_servers: List of MCPServerConfig instances
+
+        Returns:
+            List of callable tool functions
+
+        Raises:
+            RuntimeError: If MCP is not available or tool creation fails
+        """
+        if not MCP_AVAILABLE or not self._mcp_tool_adapter:
+            raise RuntimeError("MCP support not available")
+
+        all_tools = []
+
+        # Process each MCP server configuration
+        for server_config in mcp_servers:
+            # Convert dict to MCPServerConfig if needed
+            if isinstance(server_config, dict):
+                server_config = MCPServerConfig.from_dict(server_config)
+
+            if not server_config.enabled:
+                logger.debug(f"Skipping disabled MCP server: {server_config.name}")
+                continue
+
+            try:
+                # Create tools asynchronously (run in event loop)
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # If already in event loop, we need to handle this carefully
+                    # For now, log a warning
+                    logger.warning(
+                        f"Cannot create MCP tools for '{server_config.name}' "
+                        f"synchronously from running event loop. Skipping."
+                    )
+                    continue
+                else:
+                    tools = loop.run_until_complete(
+                        self._mcp_tool_adapter.create_tools(server_config)
+                    )
+                    all_tools.extend(tools)
+                    logger.debug(
+                        f"Created {len(tools)} tool(s) from MCP server '{server_config.name}'"
+                    )
+
+            except Exception as e:
+                logger.error(
+                    f"Failed to create tools from MCP server '{server_config.name}': {e}"
+                )
+                # Continue with other servers even if one fails
+                continue
+
+        return all_tools
+
+    async def _create_mcp_tools_async(self, mcp_servers: List[Any]) -> List[Callable]:
+        """
+        Create tools from MCP server configurations asynchronously.
+
+        This method must be called from async context to avoid event loop issues.
+        It properly handles async MCP tool creation without deadlocks.
+
+        Args:
+            mcp_servers: List of MCPServerConfig instances
+
+        Returns:
+            List of callable tool functions
+
+        Raises:
+            RuntimeError: If MCP is not available or tool creation fails
+        """
+        if not MCP_AVAILABLE or not self._mcp_tool_adapter:
+            raise RuntimeError("MCP support not available")
+
+        all_tools = []
+
+        # Process each MCP server configuration
+        for server_config in mcp_servers:
+            # Convert dict to MCPServerConfig if needed
+            if isinstance(server_config, dict):
+                server_config = MCPServerConfig.from_dict(server_config)
+
+            if not server_config.enabled:
+                logger.debug(f"Skipping disabled MCP server: {server_config.name}")
+                continue
+
+            try:
+                # Create tools asynchronously - no event loop issues
+                tools = await self._mcp_tool_adapter.create_tools(server_config)
+                all_tools.extend(tools)
+                logger.debug(
+                    f"Created {len(tools)} tool(s) from MCP server '{server_config.name}'"
+                )
+
+            except Exception as e:
+                logger.error(
+                    f"Failed to create tools from MCP server '{server_config.name}': {e}"
+                )
+                # Continue with other servers even if one fails
+                continue
+
+        return all_tools
+
+    async def create_agent_async(
+        self,
+        config: AgentConfig,
+        **kwargs
+    ) -> Agent:
+        """
+        Create an agent asynchronously with MCP support.
+
+        This method properly handles async MCP tool creation without event loop issues.
+        Use this method instead of create_agent() when working in async contexts.
+
+        Args:
+            config: Agent configuration
+            **kwargs: Additional arguments passed to agent creation
+
+        Returns:
+            Created LangChainAgent instance
+
+        Raises:
+            AgentCreationError: If agent creation fails
+        """
+        # Process MCP servers if configured
+        if config.mcp_servers and self._mcp_tool_adapter:
+            try:
+                mcp_tools = await self._create_mcp_tools_async(config.mcp_servers)
+                logger.info(f"Created {len(mcp_tools)} MCP tool(s) for agent '{config.name}'")
+
+                # Merge MCP tools with existing tools
+                if mcp_tools:
+                    if isinstance(config.tools, list):
+                        config.tools = list(config.tools) + mcp_tools
+                    else:
+                        logger.warning(
+                            f"Agent '{config.name}' has non-list tools, "
+                            f"skipping MCP tool merge"
+                        )
+            except Exception as e:
+                logger.warning(f"Failed to create MCP tools for '{config.name}': {e}")
+
+        # Delegate to base create_agent for actual agent creation
+        return self.create_agent(config, **kwargs)
+
+    async def cleanup_mcp(self) -> None:
+        """Clean up MCP client connections."""
+        if self._mcp_client_manager:
+            await self._mcp_client_manager.cleanup()
+            logger.info("MCP client connections cleaned up")
+
     def _infer_agent_type(self, config: AgentConfig) -> str:
         """Infer agent type from configuration.
 

@@ -17,7 +17,7 @@ from .core.exceptions import (
 )
 
 __version__ = "1.0.0"
-__author__ = "PraisonAI Team"
+__author__ = "Orchestrator Team"
 
 __all__ = [
     "Orchestrator",
