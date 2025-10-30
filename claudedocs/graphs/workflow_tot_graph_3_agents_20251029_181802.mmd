@@ -1,0 +1,26 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	research_best_players(research_best_players)
+	research_best_player(research_best_player)
+	analyze_best_player(analyze_best_player)
+	quality_assurance(quality_assurance)
+	start(start)
+	end(end)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> start;
+	analyze_best_player --> quality_assurance;
+	quality_assurance --> end;
+	research_best_player --> analyze_best_player;
+	research_best_player --> end;
+	research_best_players --> end;
+	start --> research_best_player;
+	start --> research_best_players;
+	end --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc

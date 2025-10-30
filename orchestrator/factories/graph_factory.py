@@ -25,6 +25,8 @@ from ..integrations.langchain_integration import (
 from ..core.config import AgentConfig, TaskConfig, OrchestratorConfig
 from ..core.exceptions import GraphCreationError
 from .agent_factory import AgentFactory
+from .route_classifier import RouteClassifier, RouteDecision
+from .routing_config import get_routing_strategy, RoutingStrategy
 from ..cli.events import (
     emit_node_start,
     emit_node_complete,
@@ -38,14 +40,28 @@ logger = logging.getLogger(__name__)
 class GraphFactory:
     """Factory for creating LangGraph StateGraphs from orchestrator configurations."""
 
-    def __init__(self, agent_factory: Optional[AgentFactory] = None):
-        """Initialize graph factory with agent factory."""
+    def __init__(
+        self,
+        agent_factory: Optional[AgentFactory] = None,
+        route_classifier: Optional[RouteClassifier] = None,
+        routing_strategy: Optional[RoutingStrategy] = None,
+    ):
+        """
+        Initialize graph factory with agent factory and routing components.
+
+        Args:
+            agent_factory: Optional custom agent factory
+            route_classifier: Optional custom route classifier
+            routing_strategy: Optional custom routing strategy
+        """
         if not is_available():
             raise GraphCreationError(
                 "LangChain components not available for graph creation"
             )
 
         self.agent_factory = agent_factory or AgentFactory()
+        self.route_classifier = route_classifier or RouteClassifier()
+        self.routing_strategy = routing_strategy or get_routing_strategy("default")
         self._created_graphs: Dict[str, StateGraph] = {}
         self._dynamic_tools: Dict[str, Any] = {}  # Registry for runtime tools
         logger.info("GraphFactory initialized with LangChain StateGraph support")
@@ -212,39 +228,36 @@ class GraphFactory:
         self._dynamic_tools.update(tools)
         logger.info(f"Registered {len(tools)} dynamic tools: {list(tools.keys())}")
 
-    def _create_agent_from_config(
-        self, config: AgentConfig, mode: str = "langchain"
-    ) -> LangChainAgent:
-        """Create a LangChain agent from configuration with tool resolution.
+    def _create_agent_from_config(self, config: AgentConfig) -> LangChainAgent:
+        """Create a LangChain agent from configuration with dynamic tool support.
 
         Args:
             config: Agent configuration with tools list
-            mode: Backend mode (default: 'langchain' for LangGraph)
 
         Returns:
             LangChainAgent with tools properly attached
         """
-        # Extract tool names from config
-        tool_names = config.tools or []
+        if not config.tools:
+            return self.agent_factory.create_agent(config)
 
-        # Resolve tools through backend
-        backend = self.agent_factory._backend_registry.get(mode)
-        static_tools = backend.get_tools(tool_names) if (backend and tool_names) else []
+        from copy import deepcopy
 
-        # Add dynamic tools
-        dynamic_tools = [
-            self._dynamic_tools[name]
-            for name in tool_names
-            if name in self._dynamic_tools
-        ]
+        enriched_config = deepcopy(config)
+        resolved_tools: List[Any] = []
 
-        # Combine all tools
-        all_tools = static_tools + dynamic_tools
+        for tool_entry in config.tools:
+            # Preserve callables/imported tools
+            if callable(tool_entry) and not isinstance(tool_entry, str):
+                resolved_tools.append(tool_entry)
+                continue
 
-        # Create agent with tools
-        return self.agent_factory.create_agent(
-            config, mode=mode, tools=all_tools  # Pass resolved tools
-        )
+            if isinstance(tool_entry, str) and tool_entry in self._dynamic_tools:
+                resolved_tools.append(self._dynamic_tools[tool_entry])
+            else:
+                resolved_tools.append(tool_entry)
+
+        enriched_config.tools = resolved_tools
+        return self.agent_factory.create_agent(enriched_config)
 
     def _create_agent_function(
         self, agent: LangChainAgent, config: AgentConfig
@@ -318,84 +331,42 @@ class GraphFactory:
         return agent_function
 
     def _create_router_function(self) -> Callable:
-        """Create a router function that returns only modified fields."""
+        """
+        Create a keyword-based router function using RouteClassifier.
+
+        Returns:
+            Callable router function that returns only modified state fields
+        """
 
         def router_function(state: OrchestratorState) -> Dict[str, Any]:
             """Execute router and return only modified state fields."""
             try:
                 logger.info("[Router] Evaluating prompt: %s", state.input_prompt)
 
-                # Routing logic
-                prompt_lower = state.input_prompt.lower()
+                # Use RouteClassifier for keyword-based routing
+                decision = self.route_classifier.classify_by_keywords(state.input_prompt)
 
-                # Determine route based on keywords
-                if any(
-                    kw in prompt_lower
-                    for kw in ["quick", "simple", "hello", "hola", "hi"]
-                ):
-                    route = "quick"
-                    logger.info("[Router] Matched quick keyword for prompt")
-                elif any(
-                    kw in prompt_lower
-                    for kw in [
-                        "research",
-                        "search",
-                        "find",
-                        "investiga",
-                        "busca",
-                        "encuentra",
-                    ]
-                ):
-                    route = "research"
-                    logger.info("[Router] Matched research keyword for prompt")
-                elif any(
-                    kw in prompt_lower
-                    for kw in [
-                        "analyze",
-                        "analysis",
-                        "deep",
-                        "detailed",
-                        "analiza",
-                        "analisis",
-                        "análisis",
-                        "detallado",
-                    ]
-                ):
-                    route = "analysis"
-                    logger.info("[Router] Matched analysis keyword for prompt")
-                elif any(
-                    kw in prompt_lower
-                    for kw in [
-                        "standard",
-                        "compliance",
-                        "norm",
-                        "norma",
-                        "cumplimiento",
-                    ]
-                ):
-                    route = "standards"
-                    logger.info("[Router] Matched standards keyword for prompt")
-                else:
-                    route = "analysis"  # Default to analysis for complex queries
-                    logger.info("[Router] No keyword matched; defaulting to analysis")
-
-                logger.info("Router selected route: %s (rule_based)", route)
+                logger.info(
+                    "Router selected route: %s (source: %s)",
+                    decision.route,
+                    decision.source,
+                )
 
                 # Return ONLY modified fields
                 return {
-                    "current_route": route,
+                    "current_route": decision.route,
                     "router_decision": {
-                        "route": route,
-                        "confidence": 0.8,
-                        "reason": "Rule-based keyword matching",
+                        "route": decision.route,
+                        "confidence": decision.confidence,
+                        "reason": decision.reason,
                     },
-                    "messages": [AIMessage(content=f"Routing to: {route}")],
+                    "messages": [AIMessage(content=f"Routing to: {decision.route}")],
                 }
 
             except Exception as e:
                 logger.error(f"Router function failed: {e}")
                 return {
-                    "current_route": "analysis",  # Default route
+                    "current_route": self.route_classifier.default_route,
                     "errors": state.errors + [{"agent": "router", "error": str(e)}],
                 }
 
@@ -443,102 +414,84 @@ class GraphFactory:
         return completion_function
 
     def _create_router_agent_function(self, router_agent: LangChainAgent) -> Callable:
-        """Create a router function using an LLM agent that returns only modified fields."""
+        """
+        Create a router function using an LLM agent with RouteClassifier.
+
+        Returns:
+            Callable router function that returns only modified state fields
+        """
 
         def router_agent_function(state: OrchestratorState) -> Dict[str, Any]:
             """Execute LLM router and return only modified state fields."""
             try:
                 # Create routing prompt
-                routing_prompt = f"""
-                Analyze this user request and decide the best route:
-
-                USER REQUEST: {state.input_prompt}
-
-                AVAILABLE ROUTES:
-                - quick: Simple responses, greetings
-                - research: Information gathering, web search
-                - analysis: Deep analysis, reasoning
-                - planning: Complex tasks requiring ToT planning + multi-agent execution
-                - standards: Compliance, regulations
-
-                Respond with JSON: {{"route": "route_name", "confidence": 0.9, "reasoning": "why this route"}}
-                """
+                routing_prompt = self._build_routing_prompt(state.input_prompt)
 
                 logger.debug(
                     "[RouterLLM] Sending routing prompt: %s", state.input_prompt
                 )
+
+                # Execute router agent
                 result = router_agent.execute(routing_prompt)
                 logger.debug("[RouterLLM] Raw router output: %s", result)
 
-                # Parse routing decision with JSON first, fallback to keyword search
-                allowed_routes = {
-                    "quick",
-                    "research",
-                    "analysis",
-                    "planning",
-                    "standards",
-                }
-                route = "analysis"  # Default fallback
-
-                parsed_route = None
-                try:
-                    parsed = json.loads(result)
-                    if isinstance(parsed, dict) and parsed.get("route"):
-                        parsed_route = str(parsed["route"]).strip().lower()
-                except json.JSONDecodeError:
-                    # Try extracting JSON from code block or text fragments
-                    import re
-
-                    json_match = re.search(r"\{.*\}", result, re.DOTALL)
-                    if json_match:
-                        try:
-                            parsed = json.loads(json_match.group(0))
-                            if isinstance(parsed, dict) and parsed.get("route"):
-                                parsed_route = str(parsed["route"]).strip().lower()
-                        except json.JSONDecodeError:
-                            parsed_route = None
-
-                if parsed_route in allowed_routes:
-                    route = parsed_route
-                else:
-                    lower_result = result.lower()
-                    if "planning" in lower_result:
-                        route = "planning"
-                    elif "quick" in lower_result:
-                        route = "quick"
-                    elif "research" in lower_result:
-                        route = "research"
-                    elif "standards" in lower_result:
-                        route = "standards"
-
-                if route not in allowed_routes:
-                    route = "analysis"
+                # Use RouteClassifier to parse LLM response
+                decision = self.route_classifier.classify_from_llm_response(result)
 
                 logger.info(
-                    "Router agent selected route: %s (keyword extraction)", route
+                    "Router agent selected route: %s (source: %s)",
+                    decision.route,
+                    decision.source,
                 )
 
                 # Return ONLY modified fields
                 return {
-                    "current_route": route,
+                    "current_route": decision.route,
                     "router_decision": {
-                        "route": route,
+                        "route": decision.route,
+                        "confidence": decision.confidence,
+                        "reason": decision.reason,
                         "agent_reasoning": result,
                     },
-                    "messages": [AIMessage(content=f"Router LLM selected: {route}")],
+                    "messages": [AIMessage(content=f"Router LLM selected: {decision.route}")],
                 }
 
             except Exception as e:
                 # Fallback to simple routing
                 logger.exception("Router agent execution failed", exc_info=e)
                 return {
-                    "current_route": "analysis",
+                    "current_route": self.route_classifier.default_route,
                     "errors": state.errors
                     + [{"agent": "router_agent", "error": str(e)}],
                     "error_state": f"Router agent failed: {str(e)}",
                 }
 
         return router_agent_function
+
+    def _build_routing_prompt(self, user_request: str) -> str:
+        """
+        Build routing prompt for LLM router agent.
+
+        Args:
+            user_request: The user's input prompt
+
+        Returns:
+            Formatted routing prompt
+        """
+        return f"""
+        Analyze this user request and decide the best route:
+
+        USER REQUEST: {user_request}
+
+        AVAILABLE ROUTES:
+        - quick: Simple responses, greetings
+        - research: Information gathering, web search
+        - analysis: Deep analysis, reasoning
+        - planning: Complex tasks requiring ToT planning + multi-agent execution
+        - standards: Compliance, regulations
+
+        Respond with JSON: {{"route": "route_name", "confidence": float, "reasoning": "why this route"}}
+        """
 
     def _create_simple_router_function(self) -> Callable:
         """Create a simple keyword-based router."""
@@ -602,40 +555,29 @@ class GraphFactory:
         agent_nodes: Dict[str, str],
         custom_routing: Optional[Dict[str, str]],
     ) -> None:
-        """Add edges to the workflow graph."""
+        """
+        Add edges to the workflow graph using routing strategy.
+
+        Args:
+            workflow: StateGraph to add edges to
+            config: Orchestrator configuration
+            agent_nodes: Mapping of agent names to node names
+            custom_routing: Optional custom route-to-agent mappings
+        """
+        # Create routing strategy (custom or default)
+        from .routing_config import DefaultRoutingStrategy
+
+        strategy = (
+            DefaultRoutingStrategy(route_mapping=custom_routing)
+            if custom_routing
+            else self.routing_strategy
+        )
 
         # Router to agents based on route
         def route_condition(state: OrchestratorState) -> str:
+            """Determine target agent node based on current route."""
             route = state.current_route or "analysis"
-
-            # Map routes to agents
-            route_mapping = custom_routing or {
-                "quick": (
-                    "quickresponder"
-                    if "QuickResponder" in agent_nodes
-                    else "orchestrator"
-                ),
-                "research": (
-                    "researcher" if "Researcher" in agent_nodes else "orchestrator"
-                ),
-                "analysis": "analyst" if "Analyst" in agent_nodes else "orchestrator",
-                "standards": (
-                    "standardsagent"
-                    if "StandardsAgent" in agent_nodes
-                    else "orchestrator"
-                ),
-            }
-
-            target_agent = route_mapping.get(route, "orchestrator")
-            # Convert to node name
-            for agent_name, node_name in agent_nodes.items():
-                if agent_name.lower().replace(" ", "") == target_agent.lower().replace(
-                    "_", ""
-                ):
-                    return node_name
-
-            # Fallback to first available agent
-            return list(agent_nodes.values())[0] if agent_nodes else "final_output"
+            return strategy.get_target_agent(route, agent_nodes)
 
         workflow.add_conditional_edges("router", route_condition)
 
@@ -649,23 +591,23 @@ class GraphFactory:
     def _add_chat_edges(
         self, workflow: StateGraph, agent_nodes: Dict[str, str]
     ) -> None:
-        """Add chat-style edges with dynamic routing."""
+        """
+        Add chat-style edges with dynamic routing using routing strategy.
+
+        Args:
+            workflow: StateGraph to add edges to
+            agent_nodes: Mapping of agent names to node names
+        """
+        # Use chat-specific routing strategy
+        from .routing_config import get_routing_strategy
+
+        chat_strategy = get_routing_strategy("chat")
 
         # Router to agents
         def chat_route_condition(state: OrchestratorState) -> str:
-            # Simple routing based on current route
+            """Determine target agent node for chat routing."""
             route = state.current_route or "analysis"
-
-            # Map to available agents
-            if route == "quick" and "quickresponder" in agent_nodes.values():
-                return "quickresponder"
-            elif route == "research" and "researcher" in agent_nodes.values():
-                return "researcher"
-            elif route == "standards" and "standardsagent" in agent_nodes.values():
-                return "standardsagent"
-            else:
-                # Default to first available agent
-                return list(agent_nodes.values())[0] if agent_nodes else "complete"
+            return chat_strategy.get_target_agent(route, agent_nodes)
 
         workflow.add_conditional_edges("router", chat_route_condition)
 

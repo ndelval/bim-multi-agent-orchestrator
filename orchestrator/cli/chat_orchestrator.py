@@ -363,6 +363,83 @@ class ChatOrchestrator:
             logger.debug(f"Router reasoning: {router_decision.reasoning}")
             self.console.print("[yellow]⚠ No answer generated - check logs for details[/yellow]")
 
+    def _store_conversation_turn(
+        self,
+        user_query: str,
+        final_answer: str,
+        router_decision: RouterDecision
+    ) -> None:
+        """
+        Store conversation turn in memory for future recall.
+
+        This method persists both the user query and assistant response to the
+        memory system (hybrid provider with vector, lexical, and graph storage).
+
+        Args:
+            user_query: The user's input query
+            final_answer: The assistant's response
+            router_decision: Router decision object with metadata
+        """
+        if not self.memory_manager:
+            logger.debug("Memory manager not available - skipping conversation storage")
+            return
+
+        if not final_answer:
+            logger.debug("No final answer to store - skipping conversation storage")
+            return
+
+        try:
+            from ..memory.document_schema import current_timestamp
+
+            # Create base metadata for this conversation turn
+            base_metadata = {
+                "content_type": "conversation",
+                "user_id": "default_user",  # TODO: Implement proper user session tracking
+                "agent_id": "chat_orchestrator",
+                "run_id": "chat_session",  # TODO: Implement session IDs for conversation boundaries
+                "timestamp": current_timestamp(),
+                "decision": router_decision.decision,
+                "confidence": router_decision.confidence,
+                "reasoning": router_decision.reasoning,
+            }
+
+            # Store user query
+            user_metadata = {**base_metadata, "speaker": "user"}
+            user_doc_id = self.memory_manager.store(
+                content=f"User: {user_query}",
+                metadata=user_metadata
+            )
+            logger.debug(f"Stored user query in memory: {user_doc_id}")
+
+            # Store assistant response
+            assistant_metadata = {**base_metadata, "speaker": "assistant"}
+            assistant_doc_id = self.memory_manager.store(
+                content=f"Assistant: {final_answer}",
+                metadata=assistant_metadata
+            )
+            logger.debug(f"Stored assistant response in memory: {assistant_doc_id}")
+
+            # Store combined conversation context for better retrieval
+            combined_metadata = {**base_metadata, "speaker": "conversation_pair"}
+            combined_content = f"""Conversation Turn:
+User Query: {user_query}
+Assistant Response: {final_answer}
+Routing Decision: {router_decision.decision}
+Confidence: {router_decision.confidence}"""
+
+            combined_doc_id = self.memory_manager.store(
+                content=combined_content,
+                metadata=combined_metadata
+            )
+            logger.info(f"Conversation turn stored in memory: {combined_doc_id}")
+
+        except Exception as e:
+            # Don't crash the chat loop on storage failures
+            logger.error(f"Failed to store conversation in memory: {e}", exc_info=True)
+            # Optionally inform user of storage failure
+            if self.args.verbose:
+                self.console.print(f"[yellow]⚠ Warning: Conversation not saved to memory[/yellow]")
+
     def run(self) -> int:
         """
         Run interactive chat loop.
@@ -413,6 +490,9 @@ class ChatOrchestrator:
 
                 # Display result
                 self._display_result(final_answer, router_decision)
+
+                # Store conversation in memory for future recall
+                self._store_conversation_turn(user_query, final_answer, router_decision)
 
             except KeyboardInterrupt:
                 self.console.print("\n[yellow]Interrupted by user[/yellow]")

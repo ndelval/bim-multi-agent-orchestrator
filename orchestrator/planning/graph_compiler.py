@@ -7,6 +7,7 @@ via the GraphFactory system.
 """
 
 import logging
+from collections import defaultdict
 from typing import Dict, List, Any, Optional, Callable, Set, Tuple
 from dataclasses import asdict
 
@@ -45,6 +46,7 @@ class GraphCompiler:
         
         # Compilation state
         self._agent_cache: Dict[str, LangChainAgent] = {}
+        self._incoming_edges: Dict[str, List[str]] = {}
         self._node_functions: Dict[str, Callable] = {}
         self._compiled_graphs: Dict[str, StateGraph] = {}
         
@@ -79,6 +81,10 @@ class GraphCompiler:
                 if validation_errors:
                     raise GraphCreationError(f"Graph validation failed: {validation_errors}")
             
+            # Build incoming edge map for contextual execution prompting
+            incoming_edges_map = self._build_incoming_edges_map(graph_spec)
+            self._incoming_edges = incoming_edges_map
+
             # Create agent configurations mapping
             agent_config_map = {config.name: config for config in agent_configs}
             
@@ -86,7 +92,12 @@ class GraphCompiler:
             workflow = StateGraph(OrchestratorState)
             
             # Compile nodes
-            self._compile_nodes(workflow, graph_spec, agent_config_map)
+            self._compile_nodes(
+                workflow,
+                graph_spec,
+                agent_config_map,
+                incoming_edges_map,
+            )
             
             # Compile edges
             self._compile_edges(workflow, graph_spec)
@@ -109,16 +120,31 @@ class GraphCompiler:
             logger.error(f"Failed to compile graph specification: {str(e)}")
             raise GraphCreationError(f"Graph compilation failed: {str(e)}")
     
+    def _build_incoming_edges_map(self, graph_spec: StateGraphSpec) -> Dict[str, List[str]]:
+        """Create a mapping of node name to its upstream nodes."""
+        incoming_edges: Dict[str, List[str]] = defaultdict(list)
+
+        for edge_spec in graph_spec.edges:
+            if edge_spec.to_node and edge_spec.from_node:
+                incoming_edges[edge_spec.to_node].append(edge_spec.from_node)
+
+        return incoming_edges
+    
     def _compile_nodes(
         self,
         workflow: StateGraph,
         graph_spec: StateGraphSpec,
-        agent_config_map: Dict[str, AgentConfig]
+        agent_config_map: Dict[str, AgentConfig],
+        incoming_edges_map: Dict[str, List[str]]
     ) -> None:
         """Compile nodes from graph specification."""
         for node_spec in graph_spec.nodes:
             try:
-                node_function = self._create_node_function(node_spec, agent_config_map)
+                node_function = self._create_node_function(
+                    node_spec,
+                    agent_config_map,
+                    incoming_edges_map,
+                )
                 workflow.add_node(node_spec.name, node_function)
                 self._node_functions[node_spec.name] = node_function
                 
@@ -131,7 +157,8 @@ class GraphCompiler:
     def _create_node_function(
         self,
         node_spec: GraphNodeSpec,
-        agent_config_map: Dict[str, AgentConfig]
+        agent_config_map: Dict[str, AgentConfig],
+        incoming_edges_map: Dict[str, List[str]]
     ) -> Callable:
         """Create a node function based on the node specification."""
         
@@ -140,7 +167,8 @@ class GraphCompiler:
         elif node_spec.type == NodeType.END:
             return self._create_end_function(node_spec)
         elif node_spec.type == NodeType.AGENT:
-            return self._create_agent_function(node_spec, agent_config_map)
+            incoming_nodes = incoming_edges_map.get(node_spec.name, [])
+            return self._create_agent_function(node_spec, agent_config_map, incoming_nodes)
         elif node_spec.type == NodeType.ROUTER:
             return self._create_router_function(node_spec)
         elif node_spec.type == NodeType.CONDITION:
@@ -201,7 +229,8 @@ class GraphCompiler:
     def _create_agent_function(
         self,
         node_spec: GraphNodeSpec,
-        agent_config_map: Dict[str, AgentConfig]
+        agent_config_map: Dict[str, AgentConfig],
+        incoming_nodes: List[str]
     ) -> Callable:
         """Create an agent execution function."""
 
@@ -230,8 +259,14 @@ class GraphCompiler:
                 logger.info(f"│ Completed Agents: {len(state.completed_agents):<61} │")
                 logger.info(f"└{'─'*78}┘")
 
-                # Build task description
-                task_description = self._build_task_description(node_spec, state)
+                upstream_outputs = self._extract_upstream_outputs(state, incoming_nodes)
+
+                # Build task description enriched with upstream context
+                task_description = self._build_task_description(
+                    node_spec,
+                    state,
+                    upstream_outputs
+                )
 
                 # PHASE 3: Log task description
                 logger.info(f"📋 TASK FOR NODE '{node_spec.name}':")
@@ -245,12 +280,18 @@ class GraphCompiler:
                 logger.info(f"   Messages: {len(state.messages)}")
                 logger.info(f"   Previous Outputs: {list(state.agent_outputs.keys())}")
                 logger.info(f"   Execution Depth: {state.execution_depth}")
+                if upstream_outputs:
+                    logger.info(
+                        f"   Upstream Nodes: {[entry['node'] for entry in upstream_outputs]}"
+                    )
 
                 # Execute agent (agent's own execute() method will log details)
                 execution_context = {
                     "state": asdict(state),
                     "messages": state.messages,
                     "node_outputs": state.node_outputs,
+                    "incoming_nodes": incoming_nodes,
+                    "upstream_outputs": upstream_outputs,
                 }
                 result = agent.execute(task_description, execution_context)
 
@@ -441,7 +482,12 @@ class GraphCompiler:
             # specialized LangGraph features or custom implementation
             # For now, we log the presence of parallel groups
     
-    def _build_task_description(self, node_spec: GraphNodeSpec, state: OrchestratorState) -> str:
+    def _build_task_description(
+        self,
+        node_spec: GraphNodeSpec,
+        state: OrchestratorState,
+        upstream_outputs: List[Dict[str, Any]],
+    ) -> str:
         """Build task description for agent execution."""
         description_parts = []
         
@@ -463,9 +509,18 @@ class GraphCompiler:
         # Add execution context
         if state.completed_agents:
             description_parts.append(f"Previous Agents: {', '.join(state.completed_agents)}")
-
-        # Add recent node outputs for richer context (exclude current node)
-        if state.node_outputs:
+        
+        if upstream_outputs:
+            snippets = [
+                f"{entry['node']}: {self._summarize_output(entry.get('output'))}"
+                for entry in upstream_outputs
+            ]
+            description_parts.append(
+                "Directly Connected Node Outputs:\n"
+                + "\n".join(f"- {snippet}" for snippet in snippets)
+            )
+        elif state.node_outputs:
+            # Fallback: provide the most recent outputs if upstream context is missing
             recent_entries = [
                 (name, output)
                 for name, output in state.node_outputs.items()
@@ -474,16 +529,80 @@ class GraphCompiler:
             if recent_entries:
                 recent_snippets = []
                 for name, output in recent_entries[-3:]:
-                    text = output if isinstance(output, str) else str(output)
-                    text = text.strip()
-                    if len(text) > 280:
-                        text = f"{text[:277]}..."
+                    text = self._summarize_output(output)
                     recent_snippets.append(f"{name}: {text}")
                 description_parts.append(
-                    "Recent Outputs:\n" + "\n".join(f"- {snippet}" for snippet in recent_snippets)
+                    "Recent Outputs:\n"
+                    + "\n".join(f"- {snippet}" for snippet in recent_snippets)
                 )
 
         return "\n\n".join(description_parts)
+    
+    def _extract_upstream_outputs(
+        self,
+        state: OrchestratorState,
+        incoming_nodes: List[str],
+    ) -> List[Dict[str, str]]:
+        """Collect outputs from upstream nodes to provide precise context."""
+        if not incoming_nodes:
+            # No explicit upstream edges – rely on execution order fallback
+            return self._fallback_recent_output(state)
+
+        if not getattr(state, "node_outputs", None):
+            return []
+
+        collected: List[Dict[str, str]] = []
+        seen_nodes: Set[str] = set()
+
+        for node_name in incoming_nodes:
+            if node_name in seen_nodes:
+                continue
+            seen_nodes.add(node_name)
+
+            output = state.node_outputs.get(node_name)
+            if output is None:
+                continue
+
+            collected.append(
+                {
+                    "node": node_name,
+                    "output": output if isinstance(output, str) else str(output),
+                }
+            )
+
+        if collected:
+            return collected
+
+        # Fallback to most recent execution if upstream outputs aren't populated yet
+        return self._fallback_recent_output(state)
+
+    def _fallback_recent_output(self, state: OrchestratorState) -> List[Dict[str, str]]:
+        """Provide most recent output when specific upstream data is unavailable."""
+        if not state.execution_path or not getattr(state, "node_outputs", None):
+            return []
+
+        for node_name in reversed(state.execution_path):
+            output = state.node_outputs.get(node_name)
+            if not output:
+                continue
+            return [
+                {
+                    "node": node_name,
+                    "output": output if isinstance(output, str) else str(output),
+                }
+            ]
+        return []
+
+    def _summarize_output(self, output: Any, limit: int = 280) -> str:
+        """Condense long outputs to keep prompts focused."""
+        if output is None:
+            return "No output available."
+
+        text = output if isinstance(output, str) else str(output)
+        text = text.strip()
+        if len(text) <= limit:
+            return text
+        return f"{text[: limit - 3]}..."
     
     def _llm_based_routing(self, node_spec: GraphNodeSpec, state: OrchestratorState) -> Dict[str, Any]:
         """Implement LLM-based routing logic."""

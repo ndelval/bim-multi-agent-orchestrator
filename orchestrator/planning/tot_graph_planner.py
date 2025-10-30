@@ -570,8 +570,17 @@ def _build_graph_spec_from_plan(
         return _create_sequential_graph_from_agents(agent_catalog, graph_name)
 
     # Add parsed components to graph spec
+    added_node_names: Set[str] = set()
     for node in components["nodes"]:
+        if node.name in added_node_names:
+            logger.warning(
+                "Duplicate node name '%s' detected in ToT output; keeping first instance and skipping the rest",
+                node.name,
+            )
+            continue
+
         graph_spec.add_node(node)
+        added_node_names.add(node.name)
 
     # Build set of parallel group node pairs to prevent conflicting edges
     parallel_pairs = set()

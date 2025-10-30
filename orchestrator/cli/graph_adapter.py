@@ -500,24 +500,92 @@ class CLIBackendAdapter:
         """
         from ..core.config import TaskConfig, ProcessType
 
-        # Create orchestrator config for single agent
-        task_config = TaskConfig(
-            name=f"{agent_config.name}_task",
-            description=f"USER PROMPT: {user_query}",
-            expected_output="Analysis result",
-            agent=agent_config.name,
+        agent_name_lower = (agent_config.name or "").lower()
+        agent_role_lower = (agent_config.role or "").lower()
+        is_router_agent = "router" in agent_name_lower or "router" in agent_role_lower
+
+        if is_router_agent:
+            # Preserve dedicated router path
+            task_config = TaskConfig(
+                name=f"{agent_config.name}_task",
+                description=f"USER PROMPT: {user_query}",
+                expected_output="Routing decision",
+                agent=agent_config.name,
+            )
+
+            config = OrchestratorConfig(
+                name=f"Router::{agent_config.name}",
+                process=ProcessType.SEQUENTIAL.value,
+                agents=[agent_config],
+                tasks=[task_config],
+                verbose=True,
+            )
+
+            return self.execute_router(config)
+
+        # Non-router agents: leverage route execution pipeline
+        recall_items: List[str] = []
+        base_memory_config = None
+
+        if self.memory_manager:
+            base_memory_config = getattr(self.memory_manager, "config", None)
+            try:
+                memory_results = self.memory_manager.retrieve_with_graph(
+                    query=user_query,
+                    limit=5,
+                )
+                recall_items = [
+                    (item.get("content") or "")[:200]
+                    for item in memory_results
+                    if item.get("content")
+                ]
+            except Exception as exc:
+                logger.warning(
+                    "Memory retrieval failed for single agent '%s': %s",
+                    agent_config.name,
+                    exc,
+                )
+
+        context = ExecutionContext(
+            prompt=user_query,
+            recall_items=recall_items,
+            base_memory_config=base_memory_config,
         )
 
-        config = OrchestratorConfig(
-            name=f"SingleAgent::{agent_config.name}",
-            process=ProcessType.SEQUENTIAL.value,
-            agents=[agent_config],
-            tasks=[task_config],
-            verbose=True,
-        )
+        try:
+            from ..integrations.langchain_integration import (
+                OrchestratorState,
+                HumanMessage,
+            )
+            from ..factories.agent_factory import AgentFactory
+            from ..factories.graph_factory import GraphFactory
 
-        # Execute using the router execution path
-        return self.execute_router(config)
+            # Build lightweight sequential graph for the single agent
+            agent_factory = AgentFactory()
+            graph_factory = GraphFactory(agent_factory)
+            sequential_graph = graph_factory.create_sequential_graph([agent_config])
+            compiled_graph = sequential_graph.compile()
+
+            memory_context = "\n".join(recall_items) if recall_items else None
+
+            initial_state = OrchestratorState(
+                messages=[HumanMessage(content=user_query)],
+                input_prompt=user_query,
+                memory_context=memory_context,
+                recall_items=list(recall_items),
+                max_iterations=context.max_iterations,
+            )
+
+            result = compiled_graph.invoke(initial_state)
+            return self._extract_result_from_state(result)
+
+        except Exception as exc:
+            logger.error(
+                "Single-agent execution via sequential graph failed (%s). Falling back to route execution.",
+                exc,
+                exc_info=True,
+            )
+            return self.execute_route([agent_config.name], context)
 
     def run_multi_agent_workflow(
         self, agent_sequence: List[str], user_query: str, display_adapter=None
@@ -614,6 +682,11 @@ class CLIBackendAdapter:
 
             display_text = _extract_text(final_output)
             display_adapter.show_final_answer(display_text)
+
+        # Store workflow result in memory if memory manager is available
+        if self.memory_manager and final_output:
+            self._store_workflow_result(user_query, final_output, agent_sequence)
+
         return final_output  # Return clean text, not state object
 
     # Helper Methods
@@ -734,6 +807,60 @@ class CLIBackendAdapter:
             }
 
         return clean_output  # Legacy format for backward compatibility
+
+    def _store_workflow_result(
+        self,
+        user_query: str,
+        final_output: Any,
+        agent_sequence: List[str]
+    ) -> None:
+        """
+        Store multi-agent workflow result in memory.
+
+        Args:
+            user_query: The original user query
+            final_output: The workflow's final output
+            agent_sequence: List of agent names involved in the workflow
+        """
+        if not self.memory_manager:
+            return
+
+        try:
+            from orchestrator.memory.document_schema import current_timestamp
+            from orchestrator.cli.main import _extract_text
+
+            # Extract clean text from result
+            result_text = _extract_text(final_output)
+
+            if not result_text:
+                logger.debug("No workflow result to store")
+                return
+
+            # Create workflow metadata
+            workflow_metadata = {
+                "content_type": "workflow_result",
+                "user_id": "default_user",
+                "agent_id": "multi_agent_workflow",
+                "agent_sequence": ",".join(agent_sequence),
+                "workflow_type": "sequential",
+                "timestamp": current_timestamp(),
+            }
+
+            # Store workflow interaction
+            workflow_content = f"""Multi-Agent Workflow Result:
+User Query: {user_query}
+Agent Sequence: {" → ".join(agent_sequence)}
+Result: {result_text}"""
+
+            doc_id = self.memory_manager.store(
+                content=workflow_content,
+                metadata=workflow_metadata
+            )
+
+            logger.info(f"Workflow result stored in memory: {doc_id}")
+
+        except Exception as e:
+            logger.warning(f"Failed to store workflow result: {e}", exc_info=True)
 
     def _create_agent_configs_from_sequence(
         self, agent_sequence: Sequence[str]
