@@ -461,6 +461,12 @@ def main() -> int:
         action="store_true",
         help="Enable verbose logging",
     )
+    chat_parser.add_argument(
+        "--user-id",
+        type=str,
+        default=os.getenv("ORCH_USER_ID", "default_user"),
+        help="User identifier for session tracking (default: default_user)",
+    )
 
     # Memory info command
     info_parser = subparsers.add_parser("memory-info", help="Show memory configuration")

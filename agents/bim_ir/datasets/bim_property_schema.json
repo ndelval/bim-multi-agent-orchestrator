@@ -1,0 +1,154 @@
+{
+  "description": "BIM property schema for few-shot learning context. Defines available properties, their types, and common usage patterns.",
+  "version": "1.0",
+  "properties": {
+    "Category": {
+      "type": "string",
+      "description": "Element category/family in BIM model",
+      "usage": "filter",
+      "common_values": ["Walls", "Doors", "Windows", "Floors", "Columns", "Beams", "Roofs", "Ceilings", "Stairs", "Rooms"],
+      "examples": ["Category = 'Walls'", "Category = 'Doors'"]
+    },
+    "Level": {
+      "type": "string",
+      "description": "Building level/floor where element is located",
+      "usage": "filter",
+      "common_values": ["Level 1", "Level 2", "Level 3", "Ground Floor", "Roof", "Basement"],
+      "examples": ["Level = 'Level 1'", "Level = 'Ground Floor'"],
+      "synonyms": {
+        "first floor": "Level 1",
+        "ground floor": "Level 1",
+        "second floor": "Level 2"
+      }
+    },
+    "Type": {
+      "type": "string",
+      "description": "Element type/subtype classification",
+      "usage": "filter",
+      "common_values": ["Interior", "Exterior", "Load Bearing", "Structural", "Non-Structural", "Curtain", "Partition"],
+      "examples": ["Type = 'Exterior'", "Type = 'Load Bearing'"],
+      "synonyms": {
+        "ext": "Exterior",
+        "int": "Interior",
+        "external": "Exterior",
+        "internal": "Interior"
+      }
+    },
+    "Material": {
+      "type": "string",
+      "description": "Primary construction material",
+      "usage": "filter_and_projection",
+      "common_values": ["Concrete", "Steel", "Wood", "Glass", "Brick", "Gypsum", "Aluminum", "Stone"],
+      "examples": ["Material = 'Concrete'", "SELECT Material"]
+    },
+    "Family": {
+      "type": "string",
+      "description": "Revit family name",
+      "usage": "filter",
+      "common_values": ["Basic Wall", "Curtain Wall", "Single Door", "Fixed Window", "Rectangular Column"],
+      "examples": ["Family = 'Basic Wall'"]
+    },
+    "Name": {
+      "type": "string",
+      "description": "Element name or identifier",
+      "usage": "projection",
+      "examples": ["SELECT Name"]
+    },
+    "Volume": {
+      "type": "number",
+      "unit": "cubic_meters",
+      "description": "Element volume in cubic meters",
+      "usage": "projection",
+      "examples": ["SELECT Volume"]
+    },
+    "Area": {
+      "type": "number",
+      "unit": "square_meters",
+      "description": "Element area in square meters",
+      "usage": "projection",
+      "common_for": ["Walls", "Floors", "Roofs", "Ceilings", "Rooms"],
+      "examples": ["SELECT Area"]
+    },
+    "Height": {
+      "type": "number",
+      "unit": "meters",
+      "description": "Element height in meters",
+      "usage": "projection",
+      "examples": ["SELECT Height"]
+    },
+    "Width": {
+      "type": "number",
+      "unit": "meters",
+      "description": "Element width in meters",
+      "usage": "projection",
+      "examples": ["SELECT Width"]
+    },
+    "Length": {
+      "type": "number",
+      "unit": "meters",
+      "description": "Element length in meters",
+      "usage": "projection",
+      "examples": ["SELECT Length"]
+    },
+    "Thickness": {
+      "type": "number",
+      "unit": "meters",
+      "description": "Element thickness in meters",
+      "usage": "projection",
+      "common_for": ["Walls", "Floors", "Roofs"],
+      "examples": ["SELECT Thickness"]
+    },
+    "Phase": {
+      "type": "string",
+      "description": "Construction phase",
+      "usage": "filter",
+      "common_values": ["New Construction", "Existing", "Demolition"],
+      "examples": ["Phase = 'New Construction'"]
+    },
+    "Mark": {
+      "type": "string",
+      "description": "Element marking/tag",
+      "usage": "projection",
+      "examples": ["SELECT Mark"]
+    },
+    "Comments": {
+      "type": "string",
+      "description": "Element comments or notes",
+      "usage": "projection",
+      "examples": ["SELECT Comments"]
+    }
+  },
+  "usage_patterns": {
+    "location_queries": {
+      "description": "Queries asking WHERE elements are",
+      "typical_filters": ["Level", "Category", "Type"],
+      "typical_projections": ["Name", "Mark"],
+      "examples": ["Where are the walls on Level 1?", "Show doors on the ground floor"]
+    },
+    "quantity_queries": {
+      "description": "Queries asking HOW MANY elements",
+      "typical_filters": ["Category", "Level", "Type", "Material"],
+      "typical_projections": [],
+      "note": "Usually no projections, just count",
+      "examples": ["How many windows?", "Count doors on Level 2"]
+    },
+    "material_queries": {
+      "description": "Queries asking about materials",
+      "typical_filters": ["Category", "Level", "Type"],
+      "typical_projections": ["Material"],
+      "examples": ["What material are the columns?", "Show materials of exterior walls"]
+    },
+    "detail_queries": {
+      "description": "Queries asking about specific properties",
+      "typical_filters": ["Category", "Level", "Type"],
+      "typical_projections": ["Volume", "Area", "Height", "Width", "Length", "Thickness"],
+      "examples": ["What is the volume of walls?", "Show dimensions of this door"]
+    },
+    "area_queries": {
+      "description": "Queries asking about areas or volumes",
+      "typical_filters": ["Category", "Level"],
+      "typical_projections": ["Area", "Volume"],
+      "examples": ["What is the floor area of Level 1?", "Total wall area"]
+    }
+  }
+}

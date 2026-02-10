@@ -1,0 +1,1027 @@
+{
+  "description": "Few-shot examples for BIM-GPT agent (2% sampling strategy). Each example serves all three NLU blocks: IntentClassifier, ParamExtractor, and ValueResolver.",
+  "version": "1.0",
+  "paper_reference": "BIM-GPT: a Prompt-Based Virtual Assistant Framework for BIM Information Retrieval (2304.09333v1)",
+  "sampling_rate": "2%",
+  "total_examples": 41,
+  "accuracy_targets": {
+    "intent_classification": 0.995,
+    "filter_parameters": 0.978,
+    "projection_parameters": 0.982,
+    "value_prediction": 0.889
+  },
+  "category_distribution": {
+    "location": 9,
+    "quantity": 8,
+    "material": 8,
+    "detail": 8,
+    "area": 8,
+    "non_bim": 3
+  },
+  "examples": [
+    {
+      "id": 1,
+      "query": "Where are the walls on Level 1?",
+      "intent": {
+        "is_bim": true,
+        "category": "location"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Walls"},
+          {"name": "Level", "value": "Level 1"}
+        ],
+        "proj_para": []
+      },
+      "values": {
+        "Category": {
+          "extracted": "walls",
+          "predicted": "Walls"
+        },
+        "Level": {
+          "extracted": "Level 1",
+          "predicted": "Level 1"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "query": "Show me all doors on the ground floor",
+      "intent": {
+        "is_bim": true,
+        "category": "location"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Doors"},
+          {"name": "Level", "value": "Level 1"}
+        ],
+        "proj_para": []
+      },
+      "values": {
+        "Category": {
+          "extracted": "doors",
+          "predicted": "Doors"
+        },
+        "Level": {
+          "extracted": "ground floor",
+          "predicted": "Level 1"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "query": "Find all exterior windows",
+      "intent": {
+        "is_bim": true,
+        "category": "location"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Windows"},
+          {"name": "Type", "value": "Exterior"}
+        ],
+        "proj_para": []
+      },
+      "values": {
+        "Category": {
+          "extracted": "windows",
+          "predicted": "Windows"
+        },
+        "Type": {
+          "extracted": "exterior",
+          "predicted": "Exterior"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "query": "Which columns are on Level 2?",
+      "intent": {
+        "is_bim": true,
+        "category": "location"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Columns"},
+          {"name": "Level", "value": "Level 2"}
+        ],
+        "proj_para": ["Name"]
+      },
+      "values": {
+        "Category": {
+          "extracted": "columns",
+          "predicted": "Columns"
+        },
+        "Level": {
+          "extracted": "Level 2",
+          "predicted": "Level 2"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "query": "Show all interior walls",
+      "intent": {
+        "is_bim": true,
+        "category": "location"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Walls"},
+          {"name": "Type", "value": "Interior"}
+        ],
+        "proj_para": []
+      },
+      "values": {
+        "Category": {
+          "extracted": "walls",
+          "predicted": "Walls"
+        },
+        "Type": {
+          "extracted": "interior",
+          "predicted": "Interior"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "query": "Locate the beams on the third floor",
+      "intent": {
+        "is_bim": true,
+        "category": "location"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Beams"},
+          {"name": "Level", "value": "Level 3"}
+        ],
+        "proj_para": []
+      },
+      "values": {
+        "Category": {
+          "extracted": "beams",
+          "predicted": "Beams"
+        },
+        "Level": {
+          "extracted": "third floor",
+          "predicted": "Level 3"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "query": "Where are load bearing walls?",
+      "intent": {
+        "is_bim": true,
+        "category": "location"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Walls"},
+          {"name": "Type", "value": "Load Bearing"}
+        ],
+        "proj_para": []
+      },
+      "values": {
+        "Category": {
+          "extracted": "walls",
+          "predicted": "Walls"
+        },
+        "Type": {
+          "extracted": "load bearing",
+          "predicted": "Load Bearing"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "query": "Show rooms on Level 1",
+      "intent": {
+        "is_bim": true,
+        "category": "location"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Rooms"},
+          {"name": "Level", "value": "Level 1"}
+        ],
+        "proj_para": ["Name"]
+      },
+      "values": {
+        "Category": {
+          "extracted": "rooms",
+          "predicted": "Rooms"
+        },
+        "Level": {
+          "extracted": "Level 1",
+          "predicted": "Level 1"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "query": "Find all structural columns",
+      "intent": {
+        "is_bim": true,
+        "category": "location"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Columns"},
+          {"name": "Type", "value": "Structural"}
+        ],
+        "proj_para": []
+      },
+      "values": {
+        "Category": {
+          "extracted": "columns",
+          "predicted": "Columns"
+        },
+        "Type": {
+          "extracted": "structural",
+          "predicted": "Structural"
+        }
+      }
+    },
+    {
+      "id": 10,
+      "query": "How many doors are there?",
+      "intent": {
+        "is_bim": true,
+        "category": "quantity"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Doors"}
+        ],
+        "proj_para": []
+      },
+      "values": {
+        "Category": {
+          "extracted": "doors",
+          "predicted": "Doors"
+        }
+      }
+    },
+    {
+      "id": 11,
+      "query": "Count the windows on Level 2",
+      "intent": {
+        "is_bim": true,
+        "category": "quantity"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Windows"},
+          {"name": "Level", "value": "Level 2"}
+        ],
+        "proj_para": []
+      },
+      "values": {
+        "Category": {
+          "extracted": "windows",
+          "predicted": "Windows"
+        },
+        "Level": {
+          "extracted": "Level 2",
+          "predicted": "Level 2"
+        }
+      }
+    },
+    {
+      "id": 12,
+      "query": "How many walls are on the first floor?",
+      "intent": {
+        "is_bim": true,
+        "category": "quantity"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Walls"},
+          {"name": "Level", "value": "Level 1"}
+        ],
+        "proj_para": []
+      },
+      "values": {
+        "Category": {
+          "extracted": "walls",
+          "predicted": "Walls"
+        },
+        "Level": {
+          "extracted": "first floor",
+          "predicted": "Level 1"
+        }
+      }
+    },
+    {
+      "id": 13,
+      "query": "Count all load bearing walls",
+      "intent": {
+        "is_bim": true,
+        "category": "quantity"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Walls"},
+          {"name": "Type", "value": "Load Bearing"}
+        ],
+        "proj_para": []
+      },
+      "values": {
+        "Category": {
+          "extracted": "walls",
+          "predicted": "Walls"
+        },
+        "Type": {
+          "extracted": "load bearing",
+          "predicted": "Load Bearing"
+        }
+      }
+    },
+    {
+      "id": 14,
+      "query": "How many columns?",
+      "intent": {
+        "is_bim": true,
+        "category": "quantity"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Columns"}
+        ],
+        "proj_para": []
+      },
+      "values": {
+        "Category": {
+          "extracted": "columns",
+          "predicted": "Columns"
+        }
+      }
+    },
+    {
+      "id": 15,
+      "query": "Count exterior doors",
+      "intent": {
+        "is_bim": true,
+        "category": "quantity"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Doors"},
+          {"name": "Type", "value": "Exterior"}
+        ],
+        "proj_para": []
+      },
+      "values": {
+        "Category": {
+          "extracted": "doors",
+          "predicted": "Doors"
+        },
+        "Type": {
+          "extracted": "exterior",
+          "predicted": "Exterior"
+        }
+      }
+    },
+    {
+      "id": 16,
+      "query": "How many beams are on Level 3?",
+      "intent": {
+        "is_bim": true,
+        "category": "quantity"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Beams"},
+          {"name": "Level", "value": "Level 3"}
+        ],
+        "proj_para": []
+      },
+      "values": {
+        "Category": {
+          "extracted": "beams",
+          "predicted": "Beams"
+        },
+        "Level": {
+          "extracted": "Level 3",
+          "predicted": "Level 3"
+        }
+      }
+    },
+    {
+      "id": 17,
+      "query": "Total number of rooms",
+      "intent": {
+        "is_bim": true,
+        "category": "quantity"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Rooms"}
+        ],
+        "proj_para": []
+      },
+      "values": {
+        "Category": {
+          "extracted": "rooms",
+          "predicted": "Rooms"
+        }
+      }
+    },
+    {
+      "id": 18,
+      "query": "What material are the columns?",
+      "intent": {
+        "is_bim": true,
+        "category": "material"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Columns"}
+        ],
+        "proj_para": ["Material"]
+      },
+      "values": {
+        "Category": {
+          "extracted": "columns",
+          "predicted": "Columns"
+        }
+      }
+    },
+    {
+      "id": 19,
+      "query": "Show material of exterior walls",
+      "intent": {
+        "is_bim": true,
+        "category": "material"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Walls"},
+          {"name": "Type", "value": "Exterior"}
+        ],
+        "proj_para": ["Material"]
+      },
+      "values": {
+        "Category": {
+          "extracted": "walls",
+          "predicted": "Walls"
+        },
+        "Type": {
+          "extracted": "exterior",
+          "predicted": "Exterior"
+        }
+      }
+    },
+    {
+      "id": 20,
+      "query": "What are the beams made of?",
+      "intent": {
+        "is_bim": true,
+        "category": "material"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Beams"}
+        ],
+        "proj_para": ["Material"]
+      },
+      "values": {
+        "Category": {
+          "extracted": "beams",
+          "predicted": "Beams"
+        }
+      }
+    },
+    {
+      "id": 21,
+      "query": "Show materials of doors on Level 1",
+      "intent": {
+        "is_bim": true,
+        "category": "material"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Doors"},
+          {"name": "Level", "value": "Level 1"}
+        ],
+        "proj_para": ["Material"]
+      },
+      "values": {
+        "Category": {
+          "extracted": "doors",
+          "predicted": "Doors"
+        },
+        "Level": {
+          "extracted": "Level 1",
+          "predicted": "Level 1"
+        }
+      }
+    },
+    {
+      "id": 22,
+      "query": "What material is used for windows?",
+      "intent": {
+        "is_bim": true,
+        "category": "material"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Windows"}
+        ],
+        "proj_para": ["Material"]
+      },
+      "values": {
+        "Category": {
+          "extracted": "windows",
+          "predicted": "Windows"
+        }
+      }
+    },
+    {
+      "id": 23,
+      "query": "Show me the material of load bearing columns",
+      "intent": {
+        "is_bim": true,
+        "category": "material"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Columns"},
+          {"name": "Type", "value": "Load Bearing"}
+        ],
+        "proj_para": ["Material"]
+      },
+      "values": {
+        "Category": {
+          "extracted": "columns",
+          "predicted": "Columns"
+        },
+        "Type": {
+          "extracted": "load bearing",
+          "predicted": "Load Bearing"
+        }
+      }
+    },
+    {
+      "id": 24,
+      "query": "What are the floors made of?",
+      "intent": {
+        "is_bim": true,
+        "category": "material"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Floors"}
+        ],
+        "proj_para": ["Material"]
+      },
+      "values": {
+        "Category": {
+          "extracted": "floors",
+          "predicted": "Floors"
+        }
+      }
+    },
+    {
+      "id": 25,
+      "query": "Material of structural beams?",
+      "intent": {
+        "is_bim": true,
+        "category": "material"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Beams"},
+          {"name": "Type", "value": "Structural"}
+        ],
+        "proj_para": ["Material"]
+      },
+      "values": {
+        "Category": {
+          "extracted": "beams",
+          "predicted": "Beams"
+        },
+        "Type": {
+          "extracted": "structural",
+          "predicted": "Structural"
+        }
+      }
+    },
+    {
+      "id": 26,
+      "query": "What is the volume of walls on Level 1?",
+      "intent": {
+        "is_bim": true,
+        "category": "detail"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Walls"},
+          {"name": "Level", "value": "Level 1"}
+        ],
+        "proj_para": ["Volume"]
+      },
+      "values": {
+        "Category": {
+          "extracted": "walls",
+          "predicted": "Walls"
+        },
+        "Level": {
+          "extracted": "Level 1",
+          "predicted": "Level 1"
+        }
+      }
+    },
+    {
+      "id": 27,
+      "query": "Show dimensions of doors",
+      "intent": {
+        "is_bim": true,
+        "category": "detail"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Doors"}
+        ],
+        "proj_para": ["Height", "Width", "Thickness"]
+      },
+      "values": {
+        "Category": {
+          "extracted": "doors",
+          "predicted": "Doors"
+        }
+      }
+    },
+    {
+      "id": 28,
+      "query": "What is the height of columns?",
+      "intent": {
+        "is_bim": true,
+        "category": "detail"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Columns"}
+        ],
+        "proj_para": ["Height"]
+      },
+      "values": {
+        "Category": {
+          "extracted": "columns",
+          "predicted": "Columns"
+        }
+      }
+    },
+    {
+      "id": 29,
+      "query": "Show me the volume and area of exterior walls",
+      "intent": {
+        "is_bim": true,
+        "category": "detail"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Walls"},
+          {"name": "Type", "value": "Exterior"}
+        ],
+        "proj_para": ["Volume", "Area"]
+      },
+      "values": {
+        "Category": {
+          "extracted": "walls",
+          "predicted": "Walls"
+        },
+        "Type": {
+          "extracted": "exterior",
+          "predicted": "Exterior"
+        }
+      }
+    },
+    {
+      "id": 30,
+      "query": "What is the thickness of Level 2 floors?",
+      "intent": {
+        "is_bim": true,
+        "category": "detail"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Floors"},
+          {"name": "Level", "value": "Level 2"}
+        ],
+        "proj_para": ["Thickness"]
+      },
+      "values": {
+        "Category": {
+          "extracted": "floors",
+          "predicted": "Floors"
+        },
+        "Level": {
+          "extracted": "Level 2",
+          "predicted": "Level 2"
+        }
+      }
+    },
+    {
+      "id": 31,
+      "query": "Show length of beams on the third floor",
+      "intent": {
+        "is_bim": true,
+        "category": "detail"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Beams"},
+          {"name": "Level", "value": "Level 3"}
+        ],
+        "proj_para": ["Length"]
+      },
+      "values": {
+        "Category": {
+          "extracted": "beams",
+          "predicted": "Beams"
+        },
+        "Level": {
+          "extracted": "third floor",
+          "predicted": "Level 3"
+        }
+      }
+    },
+    {
+      "id": 32,
+      "query": "What are the properties of windows?",
+      "intent": {
+        "is_bim": true,
+        "category": "detail"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Windows"}
+        ],
+        "proj_para": ["Name", "Height", "Width", "Material"]
+      },
+      "values": {
+        "Category": {
+          "extracted": "windows",
+          "predicted": "Windows"
+        }
+      }
+    },
+    {
+      "id": 33,
+      "query": "Show volume of concrete columns",
+      "intent": {
+        "is_bim": true,
+        "category": "detail"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Columns"},
+          {"name": "Material", "value": "Concrete"}
+        ],
+        "proj_para": ["Volume"]
+      },
+      "values": {
+        "Category": {
+          "extracted": "columns",
+          "predicted": "Columns"
+        },
+        "Material": {
+          "extracted": "concrete",
+          "predicted": "Concrete"
+        }
+      }
+    },
+    {
+      "id": 34,
+      "query": "What is the floor area of Level 1?",
+      "intent": {
+        "is_bim": true,
+        "category": "area"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Floors"},
+          {"name": "Level", "value": "Level 1"}
+        ],
+        "proj_para": ["Area"]
+      },
+      "values": {
+        "Category": {
+          "extracted": "floor",
+          "predicted": "Floors"
+        },
+        "Level": {
+          "extracted": "Level 1",
+          "predicted": "Level 1"
+        }
+      }
+    },
+    {
+      "id": 35,
+      "query": "Total wall area",
+      "intent": {
+        "is_bim": true,
+        "category": "area"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Walls"}
+        ],
+        "proj_para": ["Area"]
+      },
+      "values": {
+        "Category": {
+          "extracted": "wall",
+          "predicted": "Walls"
+        }
+      }
+    },
+    {
+      "id": 36,
+      "query": "Show area of rooms on Level 2",
+      "intent": {
+        "is_bim": true,
+        "category": "area"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Rooms"},
+          {"name": "Level", "value": "Level 2"}
+        ],
+        "proj_para": ["Area"]
+      },
+      "values": {
+        "Category": {
+          "extracted": "rooms",
+          "predicted": "Rooms"
+        },
+        "Level": {
+          "extracted": "Level 2",
+          "predicted": "Level 2"
+        }
+      }
+    },
+    {
+      "id": 37,
+      "query": "What is the total roof area?",
+      "intent": {
+        "is_bim": true,
+        "category": "area"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Roofs"}
+        ],
+        "proj_para": ["Area"]
+      },
+      "values": {
+        "Category": {
+          "extracted": "roof",
+          "predicted": "Roofs"
+        }
+      }
+    },
+    {
+      "id": 38,
+      "query": "Area of exterior walls on the ground floor",
+      "intent": {
+        "is_bim": true,
+        "category": "area"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Walls"},
+          {"name": "Type", "value": "Exterior"},
+          {"name": "Level", "value": "Level 1"}
+        ],
+        "proj_para": ["Area"]
+      },
+      "values": {
+        "Category": {
+          "extracted": "walls",
+          "predicted": "Walls"
+        },
+        "Type": {
+          "extracted": "exterior",
+          "predicted": "Exterior"
+        },
+        "Level": {
+          "extracted": "ground floor",
+          "predicted": "Level 1"
+        }
+      }
+    },
+    {
+      "id": 39,
+      "query": "Show ceiling area for Level 3",
+      "intent": {
+        "is_bim": true,
+        "category": "area"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Ceilings"},
+          {"name": "Level", "value": "Level 3"}
+        ],
+        "proj_para": ["Area"]
+      },
+      "values": {
+        "Category": {
+          "extracted": "ceiling",
+          "predicted": "Ceilings"
+        },
+        "Level": {
+          "extracted": "Level 3",
+          "predicted": "Level 3"
+        }
+      }
+    },
+    {
+      "id": 40,
+      "query": "What is the area of interior partitions?",
+      "intent": {
+        "is_bim": true,
+        "category": "area"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Walls"},
+          {"name": "Type", "value": "Partition"}
+        ],
+        "proj_para": ["Area"]
+      },
+      "values": {
+        "Category": {
+          "extracted": "partitions",
+          "predicted": "Walls"
+        },
+        "Type": {
+          "extracted": "interior partitions",
+          "predicted": "Partition"
+        }
+      }
+    },
+    {
+      "id": 41,
+      "query": "Total floor area of all levels",
+      "intent": {
+        "is_bim": true,
+        "category": "area"
+      },
+      "parameters": {
+        "filter_para": [
+          {"name": "Category", "value": "Floors"}
+        ],
+        "proj_para": ["Area"]
+      },
+      "values": {
+        "Category": {
+          "extracted": "floor",
+          "predicted": "Floors"
+        }
+      }
+    },
+    {
+      "id": 42,
+      "query": "What is the weather today?",
+      "intent": {
+        "is_bim": false,
+        "category": null
+      },
+      "parameters": {
+        "filter_para": [],
+        "proj_para": []
+      },
+      "values": {}
+    },
+    {
+      "id": 43,
+      "query": "Who is the project architect?",
+      "intent": {
+        "is_bim": false,
+        "category": null
+      },
+      "parameters": {
+        "filter_para": [],
+        "proj_para": []
+      },
+      "values": {}
+    },
+    {
+      "id": 44,
+      "query": "When is the deadline?",
+      "intent": {
+        "is_bim": false,
+        "category": null
+      },
+      "parameters": {
+        "filter_para": [],
+        "proj_para": []
+      },
+      "values": {}
+    }
+  ]
+}

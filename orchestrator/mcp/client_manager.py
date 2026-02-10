@@ -17,8 +17,6 @@ except ImportError:
     ClientSession = None
     StdioServerParameters = None
 
-from .stdio_custom import custom_stdio_client
-
 from .config import MCPServerConfig
 
 logger = logging.getLogger(__name__)

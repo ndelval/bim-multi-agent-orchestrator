@@ -1,0 +1,17 @@
+query,intent,is_bim
+What walls are on Level 1?,location,true
+Show me all doors on the second floor,location,true
+List beams in Zone A,location,true
+Show me all concrete columns,material,true
+Find steel beams in the building,material,true
+Which walls are made of brick?,material,true
+How many doors are there?,quantity,true
+Count all windows on Level 2,quantity,true
+What is the total number of columns?,quantity,true
+What is the volume of walls on Level 1?,property,true
+Show me the area of all floors,property,true
+What is the height of the building?,property,true
+Which beams are connected to column C1?,spatial,true
+Show walls adjacent to this room,spatial,true
+What's the weather today?,other,false
+Tell me a joke,other,false

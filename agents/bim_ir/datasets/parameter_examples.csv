@@ -1,0 +1,13 @@
+query,intent,filter_para,proj_para
+What walls are on Level 1?,location,"[{""parameter_name"": ""Category"", ""value"": ""Walls"", ""operator"": ""EQUALS""}, {""parameter_name"": ""Level"", ""value"": ""Level 1"", ""operator"": ""EQUALS""}]","[""Name"", ""Volume"", ""Area"", ""Material""]"
+Show me all concrete columns,material,"[{""parameter_name"": ""Category"", ""value"": ""Columns"", ""operator"": ""EQUALS""}, {""parameter_name"": ""Material"", ""value"": ""Concrete"", ""operator"": ""EQUALS""}]","[""Name"", ""Volume"", ""Height"", ""Level""]"
+How many doors are there?,quantity,"[{""parameter_name"": ""Category"", ""value"": ""Doors"", ""operator"": ""EQUALS""}]","[""Count""]"
+What is the volume of walls on Level 1?,property,"[{""parameter_name"": ""Category"", ""value"": ""Walls"", ""operator"": ""EQUALS""}, {""parameter_name"": ""Level"", ""value"": ""Level 1"", ""operator"": ""EQUALS""}]","[""Name"", ""Volume""]"
+Show all windows on second floor,location,"[{""parameter_name"": ""Category"", ""value"": ""Windows"", ""operator"": ""EQUALS""}, {""parameter_name"": ""Level"", ""value"": ""Level 2"", ""operator"": ""EQUALS""}]","[""Name"", ""Width"", ""Height"", ""Area""]"
+Find steel beams,material,"[{""parameter_name"": ""Category"", ""value"": ""Beams"", ""operator"": ""EQUALS""}, {""parameter_name"": ""Material"", ""value"": ""Steel"", ""operator"": ""EQUALS""}]","[""Name"", ""Length"", ""Volume"", ""Level""]"
+Count windows on Level 2,quantity,"[{""parameter_name"": ""Category"", ""value"": ""Windows"", ""operator"": ""EQUALS""}, {""parameter_name"": ""Level"", ""value"": ""Level 2"", ""operator"": ""EQUALS""}]","[""Count""]"
+Show me all 2 hour fire rated doors,property,"[{""parameter_name"": ""Category"", ""value"": ""Doors"", ""operator"": ""EQUALS""}, {""parameter_name"": ""Fire Rating"", ""value"": ""2 Hour"", ""operator"": ""EQUALS""}]","[""Name"", ""Fire Rating"", ""Level""]"
+Which walls are made of brick?,material,"[{""parameter_name"": ""Category"", ""value"": ""Walls"", ""operator"": ""EQUALS""}, {""parameter_name"": ""Material"", ""value"": ""Brick"", ""operator"": ""EQUALS""}]","[""Name"", ""Area"", ""Volume"", ""Level""]"
+What is the area of all floors?,property,"[{""parameter_name"": ""Category"", ""value"": ""Floors"", ""operator"": ""EQUALS""}]","[""Name"", ""Area"", ""Level""]"
+Count all columns in the building,quantity,"[{""parameter_name"": ""Category"", ""value"": ""Columns"", ""operator"": ""EQUALS""}]","[""Count""]"
+List all doors on the first floor,location,"[{""parameter_name"": ""Category"", ""value"": ""Doors"", ""operator"": ""EQUALS""}, {""parameter_name"": ""Level"", ""value"": ""Level 1"", ""operator"": ""EQUALS""}]","[""Name"", ""Width"", ""Height"", ""Fire Rating""]"

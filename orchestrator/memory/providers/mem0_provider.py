@@ -66,7 +66,22 @@ class Mem0MemoryProvider(BaseMemoryProvider):
             raise ProviderError(f"Failed to initialize Mem0 provider: {str(e)}")
     
     def _init_mem0_client(self, config: Dict[str, Any]):
-        """Initialize Mem0 client with fallback handling."""
+        """
+        Initialize Mem0 client with retry logic and graceful degradation.
+
+        Args:
+            config: Mem0 configuration dictionary
+
+        Returns:
+            Initialized Mem0 Memory instance
+
+        Implements retry logic for Neo4j graph store with exponential backoff.
+        Falls back to vector-only mode if graph store unavailable.
+        """
+        # Retry graph store initialization if configured
+        if "graph_store" in config:
+            config = self._retry_graph_store_init(config, max_retries=3)
+
         try:
             # Prefer factory initializer for compatibility
             try:
@@ -84,6 +99,96 @@ class Mem0MemoryProvider(BaseMemoryProvider):
                 return Memory.from_config(config_dict=config_no_vector)
             else:
                 raise
+
+    def _retry_graph_store_init(self, config: Dict[str, Any], max_retries: int = 3) -> Dict[str, Any]:
+        """
+        Retry Neo4j graph store initialization with exponential backoff.
+
+        Args:
+            config: Mem0 configuration dictionary
+            max_retries: Maximum number of retry attempts
+
+        Returns:
+            Configuration dict (potentially without graph_store if failed)
+
+        Implements exponential backoff: 1s, 2s, 4s between retries
+        """
+        import time
+
+        graph_config = config.get("graph_store", {})
+        if not graph_config:
+            return config
+
+        # Extract Neo4j connection details
+        graph_type = graph_config.get("provider") or graph_config.get("type")
+        if graph_type != "neo4j":
+            return config
+
+        neo4j_config = graph_config.get("config", {})
+        uri = neo4j_config.get("url") or neo4j_config.get("uri")
+        user = neo4j_config.get("username") or neo4j_config.get("user")
+        password = neo4j_config.get("password")
+
+        if not all([uri, user, password]):
+            logger.warning("Incomplete Neo4j configuration in Mem0; skipping graph store")
+            return {k: v for k, v in config.items() if k != "graph_store"}
+
+        # Attempt connection with retry
+        for attempt in range(max_retries):
+            if self._check_neo4j_connection(uri, user, password):
+                logger.info(f"Neo4j connection verified for Mem0 on attempt {attempt + 1}/{max_retries}")
+                return config
+
+            logger.warning(
+                f"Neo4j connection failed for Mem0 on attempt {attempt + 1}/{max_retries}"
+            )
+
+            # Exponential backoff before retry
+            if attempt < max_retries - 1:
+                backoff_time = 2 ** attempt  # 1s, 2s, 4s
+                logger.info(f"Retrying Neo4j connection in {backoff_time}s...")
+                time.sleep(backoff_time)
+
+        # All retries failed - remove graph store from config
+        logger.warning(
+            f"Neo4j connection failed after {max_retries} attempts; "
+            "Mem0 running in degraded mode (vector-only)"
+        )
+        return {k: v for k, v in config.items() if k != "graph_store"}
+
+    def _check_neo4j_connection(self, uri: str, user: str, password: str) -> bool:
+        """
+        Check if Neo4j is reachable and responsive.
+
+        Args:
+            uri: Neo4j connection URI
+            user: Neo4j username
+            password: Neo4j password
+
+        Returns:
+            True if connection successful, False otherwise
+        """
+        try:
+            from neo4j import GraphDatabase
+            from neo4j.exceptions import ServiceUnavailable, AuthError
+
+            driver = GraphDatabase.driver(uri, auth=(user, password))
+            try:
+                # Simple health check query
+                with driver.session() as session:
+                    result = session.run("RETURN 1 AS health_check")
+                    record = result.single()
+                    success = record and record["health_check"] == 1
+                    return success
+            finally:
+                driver.close()
+
+        except (ImportError, ServiceUnavailable, AuthError) as e:
+            logger.debug(f"Neo4j connection check failed: {e}")
+            return False
+        except Exception as e:
+            logger.debug(f"Unexpected error checking Neo4j connection: {e}")
+            return False
     
     def store(self, content: str, metadata: Optional[Dict[str, Any]] = None) -> str:
         """Store content in Mem0."""

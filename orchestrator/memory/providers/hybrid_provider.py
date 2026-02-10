@@ -305,8 +305,18 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
             logger.warning("sentence-transformers not installed; hybrid reranking disabled")
 
     def _initialize_graph(self, graph_cfg: Dict[str, Any]) -> None:
+        """
+        Initialize Neo4j graph store with retry logic and health checks.
+
+        Args:
+            graph_cfg: Graph configuration dictionary with uri, user, password
+
+        Note:
+            Gracefully degrades to vector + lexical only if Neo4j unavailable
+        """
         enabled = graph_cfg.get("enabled")
         if not enabled:
+            logger.info("Neo4j graph store disabled in configuration")
             return
 
         uri = graph_cfg.get("uri")
@@ -318,15 +328,102 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
 
         try:
             from neo4j import GraphDatabase
+        except ImportError:
+            logger.warning("neo4j-driver not installed; running in degraded mode (vector + lexical only)")
+            return
 
-            self._graph_driver = GraphDatabase.driver(uri, auth=(user, password))
+        # Initialize with retry logic
+        self._graph_driver = self._initialize_neo4j_with_retry(uri, user, password, max_retries=3)
+
+        if self._graph_driver:
             self._graph_config = {"uri": uri, "user": user}
             logger.info("Hybrid graph synchronization enabled")
-        except ImportError:
-            logger.warning("neo4j-driver not installed; skipping graph sync")
-        except Exception as exc:
-            logger.warning(f"Failed to initialize Neo4j driver: {exc}")
-            self._graph_driver = None
+        else:
+            logger.warning("Neo4j initialization failed after retries; running in degraded mode (vector + lexical only)")
+
+    def _initialize_neo4j_with_retry(
+        self,
+        uri: str,
+        user: str,
+        password: str,
+        max_retries: int = 3,
+    ) -> Optional[Any]:
+        """
+        Initialize Neo4j driver with exponential backoff retry logic.
+
+        Args:
+            uri: Neo4j connection URI
+            user: Neo4j username
+            password: Neo4j password
+            max_retries: Maximum number of retry attempts
+
+        Returns:
+            Neo4j driver instance if successful, None otherwise
+
+        Implements exponential backoff: 1s, 2s, 4s between retries
+        """
+        import time
+        from neo4j import GraphDatabase
+        from neo4j.exceptions import ServiceUnavailable, AuthError
+
+        for attempt in range(max_retries):
+            try:
+                driver = GraphDatabase.driver(uri, auth=(user, password))
+
+                # Verify connectivity with health check
+                if self._check_neo4j_health(driver):
+                    logger.info(f"Neo4j connection established on attempt {attempt + 1}/{max_retries}")
+                    return driver
+                else:
+                    driver.close()
+                    logger.warning(f"Neo4j health check failed on attempt {attempt + 1}/{max_retries}")
+
+            except AuthError as e:
+                logger.error(f"Neo4j authentication failed: {e}")
+                return None  # Don't retry on auth errors
+
+            except ServiceUnavailable as e:
+                logger.warning(
+                    f"Neo4j unavailable on attempt {attempt + 1}/{max_retries}: {e}"
+                )
+
+            except Exception as e:
+                logger.warning(
+                    f"Neo4j connection error on attempt {attempt + 1}/{max_retries}: {e}"
+                )
+
+            # Exponential backoff before retry
+            if attempt < max_retries - 1:
+                backoff_time = 2 ** attempt  # 1s, 2s, 4s
+                logger.info(f"Retrying Neo4j connection in {backoff_time}s...")
+                time.sleep(backoff_time)
+
+        logger.error(f"Neo4j initialization failed after {max_retries} attempts")
+        return None
+
+    def _check_neo4j_health(self, driver: Optional[Any] = None) -> bool:
+        """
+        Check Neo4j connection health.
+
+        Args:
+            driver: Neo4j driver instance (uses self._graph_driver if None)
+
+        Returns:
+            True if Neo4j is healthy and responsive, False otherwise
+        """
+        driver_to_check = driver or self._graph_driver
+        if not driver_to_check:
+            return False
+
+        try:
+            # Simple query to verify connectivity
+            with driver_to_check.session() as session:
+                result = session.run("RETURN 1 AS health_check")
+                record = result.single()
+                return record and record["health_check"] == 1
+        except Exception as e:
+            logger.debug(f"Neo4j health check failed: {e}")
+            return False
 
     def _generate_embedding(self, text: str) -> Optional[List[float]]:
         if not text:
@@ -411,7 +508,23 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
                 cursor.executemany("DELETE FROM documents_fts WHERE rowid = ?", [(rid,) for rid in rowids])
 
     def _upsert_graph(self, doc_id: str, content: str, metadata: Dict[str, Any]) -> None:
+        """
+        Upsert document to Neo4j graph store.
+
+        Args:
+            doc_id: Document identifier
+            content: Document content
+            metadata: Document metadata
+
+        Note:
+            Gracefully skips if Neo4j unavailable or unhealthy
+        """
         if not self._graph_driver:
+            return
+
+        # Health check before graph operation
+        if not self._check_neo4j_health():
+            logger.debug("Neo4j unhealthy, skipping graph upsert")
             return
 
         if not metadata.get("document_id"):
@@ -669,22 +782,71 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
         return meta
 
     def _graph_execute_write(self, func, params: Dict[str, Any]) -> None:
+        """
+        Execute write transaction on Neo4j.
+
+        Args:
+            func: Transaction function
+            params: Transaction parameters
+
+        Note:
+            Gracefully skips if Neo4j unavailable or unhealthy
+        """
         driver = self._graph_driver
         if not driver:
             return
-        session = getattr(self._graph_session_cache, "session", None)
-        if session is None or session.closed():
-            session = driver.session()
-            self._graph_session_cache.session = session
-        session.execute_write(func, params)
+
+        # Health check before graph operation
+        if not self._check_neo4j_health():
+            logger.debug("Neo4j unhealthy, skipping graph write")
+            return
+
+        try:
+            session = getattr(self._graph_session_cache, "session", None)
+            if session is None or session.closed():
+                session = driver.session()
+                self._graph_session_cache.session = session
+            session.execute_write(func, params)
+        except Exception as e:
+            logger.warning(f"Graph write transaction failed: {e}")
+            # Close failed session
+            if hasattr(self._graph_session_cache, "session"):
+                try:
+                    self._graph_session_cache.session.close()
+                except Exception:
+                    pass
+                self._graph_session_cache.session = None
 
     def _graph_query(self, cypher: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Execute read query on Neo4j.
+
+        Args:
+            cypher: Cypher query string
+            params: Query parameters
+
+        Returns:
+            List of query results as dictionaries
+
+        Note:
+            Returns empty list if Neo4j unavailable or unhealthy
+        """
         driver = self._graph_driver
         if not driver:
             return []
-        with driver.session() as session:
-            records = session.run(cypher, params)
-            return [record.data() for record in records]
+
+        # Health check before graph operation
+        if not self._check_neo4j_health():
+            logger.debug("Neo4j unhealthy, skipping graph query")
+            return []
+
+        try:
+            with driver.session() as session:
+                records = session.run(cypher, params)
+                return [record.data() for record in records]
+        except Exception as e:
+            logger.warning(f"Graph query failed: {e}")
+            return []
 
     def _graph_candidate_chunks(
         self,

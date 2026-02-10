@@ -2,7 +2,7 @@
 Working stdio transport implementation for MCP servers.
 
 This is a workaround for the Python MCP SDK stdio_client bug that causes
-BrokenResourceError when connecting to certain MCP servers (like APS MCP).
+BrokenResourceError when connecting to certain MCP servers.
 
 The official SDK's stdio_client has a stream management bug where the stdout_reader
 task crashes with BrokenResourceError. This implementation uses simple subprocess

@@ -23,6 +23,7 @@ from ..core.config import (
 from ..core.value_objects import RouterDecision
 from ..core.error_handler import ErrorHandler
 from ..memory.memory_manager import MemoryManager
+from ..session.session_manager import SessionManager
 from .display_adapter import DisplayAdapter, create_display_adapter
 from .graph_adapter import GraphAgentAdapter
 
@@ -45,7 +46,7 @@ class ChatOrchestrator:
         Initialize chat orchestrator with configuration.
 
         Args:
-            args: Command-line arguments with memory_provider, backend, llm, verbose
+            args: Command-line arguments with memory_provider, backend, llm, verbose, user_id
             display_adapter: Optional display adapter (defaults to RichDisplayAdapter)
         """
         self.args = args
@@ -53,6 +54,7 @@ class ChatOrchestrator:
         self.display: DisplayAdapter = display_adapter or create_display_adapter("rich")
         self.error_handler = ErrorHandler(logger)
         self.memory_manager: Optional[MemoryManager] = None
+        self.session_manager: Optional[SessionManager] = None
         self.adapter: Optional[GraphAgentAdapter] = None
 
         # Agent configurations
@@ -108,6 +110,45 @@ class ChatOrchestrator:
                 exception=e,
                 operation="memory_initialization",
                 component="memory_manager"
+            )
+            self.console.print(f"[red]✗ {resolution.recovery_hint}[/red]")
+            return False
+
+    def _initialize_session(self) -> bool:
+        """
+        Initialize session manager and create new session.
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Initialize session manager
+            self.session_manager = SessionManager()
+
+            # Get user_id from args or use default
+            user_id = getattr(self.args, 'user_id', 'default_user')
+
+            # Create new session with metadata
+            session = self.session_manager.create_session(
+                user_id=user_id,
+                metadata={
+                    "source": "cli",
+                    "backend": self.args.backend,
+                    "memory_provider": self.args.memory_provider,
+                }
+            )
+
+            self.console.print(
+                f"[green]✓ Session created: {session.session_id[:8]}... "
+                f"(user: {user_id}, session #{session.turn_count + 1})[/green]"
+            )
+            return True
+
+        except Exception as e:
+            resolution = self.error_handler.handle_error(
+                exception=e,
+                operation="session_initialization",
+                component="session_manager"
             )
             self.console.print(f"[red]✗ {resolution.recovery_hint}[/red]")
             return False
@@ -374,6 +415,7 @@ class ChatOrchestrator:
 
         This method persists both the user query and assistant response to the
         memory system (hybrid provider with vector, lexical, and graph storage).
+        Uses proper session tracking from SessionManager.
 
         Args:
             user_query: The user's input query
@@ -388,15 +430,30 @@ class ChatOrchestrator:
             logger.debug("No final answer to store - skipping conversation storage")
             return
 
+        # Record conversation turn in session
+        if self.session_manager and self.session_manager.current_session:
+            try:
+                self.session_manager.record_turn()
+            except Exception as e:
+                logger.warning(f"Failed to record session turn: {e}")
+
         try:
             from ..memory.document_schema import current_timestamp
+
+            # Get session context for proper tracking
+            user_id = "default_user"
+            session_id = "chat_session"
+
+            if self.session_manager and self.session_manager.current_session:
+                user_id = self.session_manager.current_session.user_id
+                session_id = self.session_manager.current_session.session_id
 
             # Create base metadata for this conversation turn
             base_metadata = {
                 "content_type": "conversation",
-                "user_id": "default_user",  # TODO: Implement proper user session tracking
+                "user_id": user_id,
                 "agent_id": "chat_orchestrator",
-                "run_id": "chat_session",  # TODO: Implement session IDs for conversation boundaries
+                "run_id": session_id,
                 "timestamp": current_timestamp(),
                 "decision": router_decision.decision,
                 "confidence": router_decision.confidence,
@@ -458,6 +515,9 @@ Confidence: {router_decision.confidence}"""
         if not self._initialize_memory():
             return 1
 
+        if not self._initialize_session():
+            return 1
+
         if not self._build_agents():
             return 1
 
@@ -474,7 +534,16 @@ Confidence: {router_decision.confidence}"""
                     continue
 
                 if user_query.lower() in ["exit", "quit"]:
-                    self.console.print("[yellow]Goodbye![/yellow]")
+                    # End session properly
+                    if self.session_manager:
+                        session_info = self.session_manager.get_session_info()
+                        self.session_manager.end_session()
+                        self.console.print(
+                            f"[yellow]Goodbye! Session ended "
+                            f"({session_info.get('turn_count', 0)} turns)[/yellow]"
+                        )
+                    else:
+                        self.console.print("[yellow]Goodbye![/yellow]")
                     break
 
                 # Clear previous workflow display
@@ -496,6 +565,9 @@ Confidence: {router_decision.confidence}"""
 
             except KeyboardInterrupt:
                 self.console.print("\n[yellow]Interrupted by user[/yellow]")
+                # End session on interrupt
+                if self.session_manager:
+                    self.session_manager.end_session()
                 break
             except Exception as e:
                 resolution = self.error_handler.handle_error(
@@ -505,6 +577,10 @@ Confidence: {router_decision.confidence}"""
                 )
                 self.console.print(f"[red]✗ {resolution.recovery_hint}[/red]")
                 continue
+
+        # Cleanup on exit
+        if self.session_manager:
+            self.session_manager.close()
 
         return 0
 

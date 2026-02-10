@@ -113,6 +113,7 @@ class OrchestratorConfig:
     user_id: str = "default_user"  # User ID for session tracking
     run_id: Optional[str] = None  # Run ID for execution tracking
     async_execution: bool = False  # Enable asynchronous execution
+    custom_config: Optional[Dict[str, Any]] = None  # Custom configuration for extensions
 
     def __post_init__(self):
         """Initialize default memory config if not provided."""

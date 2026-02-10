@@ -1,0 +1,148 @@
+{
+  "description": "Sample values for BIM properties to provide context for value prediction/normalization. These represent typical values found in BIM models.",
+  "version": "1.0",
+  "property_values": {
+    "Category": {
+      "total_count": 15,
+      "top_values": [
+        "Walls",
+        "Doors",
+        "Windows",
+        "Floors",
+        "Columns",
+        "Beams",
+        "Roofs",
+        "Ceilings",
+        "Stairs",
+        "Rooms",
+        "Furniture",
+        "Equipment",
+        "Plumbing Fixtures",
+        "Lighting Fixtures",
+        "Structural Framing"
+      ]
+    },
+    "Level": {
+      "total_count": 6,
+      "top_values": [
+        "Level 1",
+        "Level 2",
+        "Level 3",
+        "Ground Floor",
+        "Roof",
+        "Basement"
+      ],
+      "note": "Ground Floor is equivalent to Level 1 in many projects"
+    },
+    "Type": {
+      "total_count": 12,
+      "top_values": [
+        "Exterior",
+        "Interior",
+        "Load Bearing",
+        "Structural",
+        "Non-Structural",
+        "Curtain",
+        "Partition",
+        "Fire Rated",
+        "Acoustic",
+        "Thermal",
+        "Retaining",
+        "Foundation"
+      ]
+    },
+    "Material": {
+      "total_count": 20,
+      "top_values": [
+        "Concrete",
+        "Steel",
+        "Wood",
+        "Glass",
+        "Brick",
+        "Gypsum",
+        "Aluminum",
+        "Stone",
+        "Ceramic",
+        "Vinyl",
+        "Copper",
+        "Plastic",
+        "Composite",
+        "Marble",
+        "Granite"
+      ]
+    },
+    "Family": {
+      "total_count": 50,
+      "sample_values": [
+        "Basic Wall",
+        "Curtain Wall",
+        "Retaining Wall",
+        "Single Door",
+        "Double Door",
+        "Sliding Door",
+        "Fixed Window",
+        "Casement Window",
+        "Rectangular Column",
+        "Round Column",
+        "Steel Beam",
+        "Concrete Beam",
+        "Basic Floor",
+        "Generic Roof"
+      ],
+      "note": "Many more families exist; this is a representative sample"
+    },
+    "Phase": {
+      "total_count": 3,
+      "top_values": [
+        "New Construction",
+        "Existing",
+        "Demolition"
+      ]
+    }
+  },
+  "value_normalization_rules": {
+    "level_synonyms": {
+      "first floor": "Level 1",
+      "ground floor": "Level 1",
+      "second floor": "Level 2",
+      "third floor": "Level 3",
+      "basement": "Basement",
+      "rooftop": "Roof",
+      "roof level": "Roof"
+    },
+    "type_synonyms": {
+      "ext": "Exterior",
+      "int": "Interior",
+      "external": "Exterior",
+      "internal": "Interior",
+      "outer": "Exterior",
+      "inner": "Interior"
+    },
+    "material_synonyms": {
+      "cement": "Concrete",
+      "metal": "Steel",
+      "timber": "Wood",
+      "wooden": "Wood",
+      "steel frame": "Steel",
+      "reinforced concrete": "Concrete"
+    },
+    "category_variants": {
+      "wall": "Walls",
+      "door": "Doors",
+      "window": "Windows",
+      "floor": "Floors",
+      "column": "Columns",
+      "beam": "Beams",
+      "roof": "Roofs",
+      "ceiling": "Ceilings",
+      "stair": "Stairs",
+      "room": "Rooms"
+    }
+  },
+  "usage_notes": {
+    "sampling_strategy": "When a property has >50 distinct values, sample the top 50 most common values for context in the prompt",
+    "normalization_priority": "1. Exact match, 2. Case-insensitive match, 3. Synonym lookup, 4. Partial match, 5. LLM prediction with context",
+    "value_extraction": "Extract the raw text from the user query that corresponds to the parameter value",
+    "value_prediction": "Normalize the extracted value to match the database value format using context and rules"
+  }
+}
