@@ -2,7 +2,7 @@
 
 A multi-agent orchestration framework built on LangGraph and LangChain, designed for automating BIM/CAD workflows in the Architecture, Engineering, and Construction (AEC) sector. The system integrates hybrid memory retrieval (vector + lexical + graph), Tree-of-Thought planning, and the Model Context Protocol (MCP) for tool interoperability.
 
-Developed as part of a Bachelor's Thesis (TFG) at the Universitat Politecnica de Valencia.
+Developed as part of a Bachelor's Thesis (TFG) at the Universidad Pontificia Comillas ICAI
 
 ---
 
@@ -408,4 +408,4 @@ This project requires Python 3.11 exactly (`requires-python = "==3.11.*"`).
 
 ## License
 
-This project was developed as an academic work (TFG) at the Universitat Politecnica de Valencia.
+This project was developed as an academic work (TFG) at the Universidad Pontificia Comillas ICAI
