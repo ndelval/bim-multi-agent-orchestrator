@@ -24,7 +24,7 @@ class OrchestratorError(Exception):
         self,
         message: str,
         recovery_hint: Optional[str] = None,
-        category: Optional[str] = None
+        category: Optional[str] = None,
     ):
         """
         Initialize orchestrator error.
@@ -79,7 +79,9 @@ class TaskExecutionError(OrchestratorError):
     """Raised when there's an error during task execution."""
 
     def _default_recovery_hint(self) -> str:
-        return "Verify task definition and agent configuration. Check input data validity"
+        return (
+            "Verify task definition and agent configuration. Check input data validity"
+        )
 
     def is_retryable(self) -> bool:
         return True  # May be transient execution issues
@@ -143,6 +145,33 @@ class TemplateError(OrchestratorError):
 
     def is_retryable(self) -> bool:
         return False  # Template errors are configuration issues
+
+
+class AgentExecutionError(OrchestratorError):
+    """Raised when an agent fails during task execution.
+
+    Attributes:
+        agent_name: Name of the agent that failed
+        original_error: The underlying exception that caused the failure
+    """
+
+    def __init__(
+        self,
+        agent_name: str,
+        original_error: Exception,
+        recovery_hint: Optional[str] = None,
+        category: Optional[str] = None,
+    ):
+        self.agent_name = agent_name
+        self.original_error = original_error
+        message = f"Agent '{agent_name}' execution failed: {original_error}"
+        super().__init__(message, recovery_hint=recovery_hint, category=category)
+
+    def _default_recovery_hint(self) -> str:
+        return f"Check agent '{self.agent_name}' configuration, LLM availability, and input data"
+
+    def is_retryable(self) -> bool:
+        return True  # Agent execution failures are often transient (LLM timeouts, rate limits)
 
 
 class GraphCreationError(OrchestratorError):

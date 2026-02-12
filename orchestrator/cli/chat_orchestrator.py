@@ -8,7 +8,7 @@ chat sessions with router-based agent orchestration.
 import argparse
 import logging
 import os
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -41,7 +41,9 @@ class ChatOrchestrator:
     - Result display and error handling
     """
 
-    def __init__(self, args: argparse.Namespace, display_adapter: Optional[DisplayAdapter] = None):
+    def __init__(
+        self, args: argparse.Namespace, display_adapter: Optional[DisplayAdapter] = None
+    ):
         """
         Initialize chat orchestrator with configuration.
 
@@ -90,13 +92,14 @@ class ChatOrchestrator:
         try:
             # Create memory configuration with proper config object pattern
             embedder_provider = os.getenv("HYBRID_EMBEDDER_PROVIDER", "openai")
-            embedder_model = os.getenv("HYBRID_EMBEDDER_MODEL", "text-embedding-3-small")
+            embedder_model = os.getenv(
+                "HYBRID_EMBEDDER_MODEL", "text-embedding-3-small"
+            )
             memory_config = MemoryConfig(
                 provider=MemoryProvider(self.args.memory_provider.lower()),
                 use_embedding=True,
                 embedder=EmbedderConfig(
-                    provider=embedder_provider,
-                    config={"model": embedder_model}
+                    provider=embedder_provider, config={"model": embedder_model}
                 ),
                 config={},
             )
@@ -109,7 +112,7 @@ class ChatOrchestrator:
             resolution = self.error_handler.handle_error(
                 exception=e,
                 operation="memory_initialization",
-                component="memory_manager"
+                component="memory_manager",
             )
             self.console.print(f"[red]✗ {resolution.recovery_hint}[/red]")
             return False
@@ -122,11 +125,12 @@ class ChatOrchestrator:
             True if successful, False otherwise
         """
         try:
-            # Initialize session manager
-            self.session_manager = SessionManager()
+            # Initialize session manager with configurable path
+            session_db = os.environ.get("ORCH_SESSION_DB", ".praison/sessions.db")
+            self.session_manager = SessionManager(db_path=session_db)
 
             # Get user_id from args or use default
-            user_id = getattr(self.args, 'user_id', 'default_user')
+            user_id = getattr(self.args, "user_id", "default_user")
 
             # Create new session with metadata
             session = self.session_manager.create_session(
@@ -135,7 +139,7 @@ class ChatOrchestrator:
                     "source": "cli",
                     "backend": self.args.backend,
                     "memory_provider": self.args.memory_provider,
-                }
+                },
             )
 
             self.console.print(
@@ -148,7 +152,7 @@ class ChatOrchestrator:
             resolution = self.error_handler.handle_error(
                 exception=e,
                 operation="session_initialization",
-                component="session_manager"
+                component="session_manager",
             )
             self.console.print(f"[red]✗ {resolution.recovery_hint}[/red]")
             return False
@@ -176,9 +180,7 @@ class ChatOrchestrator:
 
         except Exception as e:
             resolution = self.error_handler.handle_error(
-                exception=e,
-                operation="agent_building",
-                component="agent_factory"
+                exception=e, operation="agent_building", component="agent_factory"
             )
             self.console.print(f"[red]✗ {resolution.recovery_hint}[/red]")
             return False
@@ -196,7 +198,9 @@ class ChatOrchestrator:
                 llm=self.args.llm,
                 enable_parallel=True,
             )
-            self.console.print("[cyan]Using LangGraph backend with parallel execution[/cyan]\n")
+            self.console.print(
+                "[cyan]Using LangGraph backend with parallel execution[/cyan]\n"
+            )
             return True
         else:
             self.console.print(f"[red]Unknown backend: {self.args.backend}[/red]")
@@ -213,7 +217,11 @@ class ChatOrchestrator:
             RouterDecision object with route, confidence, reasoning, and metadata,
             or None if router execution failed
         """
-        from .main import _extract_decision, _extract_text, _parse_router_payload
+        from orchestrator.utils.output_extraction import (
+            extract_decision,
+            extract_text,
+            parse_router_payload,
+        )
 
         try:
             router_result = self.adapter.run_single_agent(
@@ -222,20 +230,18 @@ class ChatOrchestrator:
             )
         except Exception as e:
             resolution = self.error_handler.handle_error(
-                exception=e,
-                operation="router_execution",
-                component="router"
+                exception=e, operation="router_execution", component="router"
             )
             self.console.print(f"[red]✗ {resolution.recovery_hint}[/red]")
             return None
 
         # Extract decision from router result
-        router_raw_text = _extract_text(router_result)
-        payload = _parse_router_payload(router_raw_text)
+        router_raw_text = extract_text(router_result)
+        payload = parse_router_payload(router_raw_text)
 
         decision = payload.get("decision")
         if not decision:
-            decision = _extract_decision(router_result)
+            decision = extract_decision(router_result)
 
         # Replace silent fallback with logged fallback
         if not decision:
@@ -264,7 +270,7 @@ class ChatOrchestrator:
             latency=latency,
             assigned_agents=assigned_agents,
             tokens=tokens,
-            payload=payload
+            payload=payload,
         )
 
         # Show router decision via display adapter
@@ -273,7 +279,7 @@ class ChatOrchestrator:
             confidence=router_decision.confidence,
             rationale=router_decision.reasoning,
             latency=router_decision.latency,
-            tokens=router_decision.tokens
+            tokens=router_decision.tokens,
         )
 
         return router_decision
@@ -289,7 +295,7 @@ class ChatOrchestrator:
         Returns:
             Final answer text or None if execution failed
         """
-        from .main import _extract_text
+        from orchestrator.utils.output_extraction import extract_text
 
         final_answer = None
 
@@ -312,7 +318,7 @@ class ChatOrchestrator:
 
     def _execute_quick_path(self, user_query: str) -> Optional[str]:
         """Execute quick path with single researcher agent."""
-        from .main import _extract_text
+        from orchestrator.utils.output_extraction import extract_text
 
         self.display.show_agent_start("Researcher", "Gathering information")
 
@@ -321,7 +327,7 @@ class ChatOrchestrator:
                 agent_config=self.researcher_config,
                 user_query=user_query,
             )
-            final_answer = _extract_text(researcher_result)
+            final_answer = extract_text(researcher_result)
 
             self.display.show_agent_complete("Researcher", "Research completed")
 
@@ -331,14 +337,14 @@ class ChatOrchestrator:
             resolution = self.error_handler.handle_error(
                 exception=e,
                 operation="researcher_execution",
-                component="researcher_agent"
+                component="researcher_agent",
             )
             self.console.print(f"[red]✗ {resolution.recovery_hint}[/red]")
             return None
 
     def _execute_analysis_path(self, user_query: str) -> Optional[str]:
         """Execute analysis path with multi-agent workflow."""
-        from .main import _extract_text
+        from orchestrator.utils.output_extraction import extract_text
 
         agent_sequence = ["Researcher", "Analyst", "StandardsAgent"]
 
@@ -348,27 +354,62 @@ class ChatOrchestrator:
                 user_query=user_query,
                 display_adapter=self.display,
             )
-            return _extract_text(workflow_result)
+            return extract_text(workflow_result)
 
         except Exception as e:
             resolution = self.error_handler.handle_error(
-                exception=e,
-                operation="analysis_workflow",
-                component="multi_agent"
+                exception=e, operation="analysis_workflow", component="multi_agent"
             )
             self.console.print(f"[red]✗ {resolution.recovery_hint}[/red]")
             return None
 
     def _execute_planning_path(self, user_query: str) -> Optional[str]:
-        """Execute planning path with ToT planner and multi-agent workflow."""
-        from .main import _extract_text
+        """Execute planning path with ToT planner and multi-agent workflow.
 
-        self.console.print(
-            "[yellow]⚠ Planning path with ToT is not yet implemented[/yellow]"
-        )
+        Attempts Tree-of-Thought planning to decompose the query into
+        agent assignments.  Falls back to a fixed 4-agent analysis path
+        when ToT is unavailable or fails.
+        """
+        from orchestrator.utils.output_extraction import extract_text
 
-        # Fallback to analysis path
-        agent_sequence = ["Researcher", "Analyst", "Planner", "StandardsAgent"]
+        # --- Attempt ToT planning ---
+        agent_sequence: List[str] = []
+        try:
+            from orchestrator.planning.tot_planner import (
+                generate_plan_with_tot,
+            )
+            from orchestrator.factories.agent_templates import (
+                list_template_names,
+                get_agent_template,
+            )
+
+            catalog = [get_agent_template(name) for name in list_template_names()]
+            plan_result = generate_plan_with_tot(
+                prompt=user_query,
+                recall_snippets=[],
+                agent_catalog=catalog,
+            )
+
+            assignments = plan_result.get("assignments", [])
+            if assignments:
+                agent_sequence = [a["agent"] for a in assignments]
+                self.console.print(
+                    f"[cyan]🌳 ToT plan: {' → '.join(agent_sequence)}[/cyan]"
+                )
+            else:
+                self.console.print(
+                    "[yellow]⚠ ToT planner returned empty plan – using default sequence[/yellow]"
+                )
+
+        except Exception as e:
+            logger.warning("ToT planning unavailable or failed: %s", e)
+            self.console.print(
+                "[yellow]⚠ ToT planner not available – using default planning sequence[/yellow]"
+            )
+
+        # Fallback to fixed sequence when ToT didn't produce assignments
+        if not agent_sequence:
+            agent_sequence = ["Researcher", "Analyst", "Planner", "StandardsAgent"]
 
         try:
             workflow_result = self.adapter.run_multi_agent_workflow(
@@ -376,18 +417,18 @@ class ChatOrchestrator:
                 user_query=user_query,
                 display_adapter=self.display,
             )
-            return _extract_text(workflow_result)
+            return extract_text(workflow_result)
 
         except Exception as e:
             resolution = self.error_handler.handle_error(
-                exception=e,
-                operation="planning_workflow",
-                component="multi_agent"
+                exception=e, operation="planning_workflow", component="multi_agent"
             )
             self.console.print(f"[red]✗ {resolution.recovery_hint}[/red]")
             return None
 
-    def _display_result(self, final_answer: Optional[str], router_decision: RouterDecision) -> None:
+    def _display_result(
+        self, final_answer: Optional[str], router_decision: RouterDecision
+    ) -> None:
         """
         Display final answer to user.
 
@@ -402,13 +443,12 @@ class ChatOrchestrator:
             logger.warning("No final answer generated - workflow may have failed")
             logger.debug(f"Router decision was: {router_decision.decision}")
             logger.debug(f"Router reasoning: {router_decision.reasoning}")
-            self.console.print("[yellow]⚠ No answer generated - check logs for details[/yellow]")
+            self.console.print(
+                "[yellow]⚠ No answer generated - check logs for details[/yellow]"
+            )
 
     def _store_conversation_turn(
-        self,
-        user_query: str,
-        final_answer: str,
-        router_decision: RouterDecision
+        self, user_query: str, final_answer: str, router_decision: RouterDecision
     ) -> None:
         """
         Store conversation turn in memory for future recall.
@@ -460,42 +500,32 @@ class ChatOrchestrator:
                 "reasoning": router_decision.reasoning,
             }
 
-            # Store user query
-            user_metadata = {**base_metadata, "speaker": "user"}
-            user_doc_id = self.memory_manager.store(
-                content=f"User: {user_query}",
-                metadata=user_metadata
-            )
-            logger.debug(f"Stored user query in memory: {user_doc_id}")
-
-            # Store assistant response
-            assistant_metadata = {**base_metadata, "speaker": "assistant"}
-            assistant_doc_id = self.memory_manager.store(
-                content=f"Assistant: {final_answer}",
-                metadata=assistant_metadata
-            )
-            logger.debug(f"Stored assistant response in memory: {assistant_doc_id}")
-
-            # Store combined conversation context for better retrieval
-            combined_metadata = {**base_metadata, "speaker": "conversation_pair"}
+            # Store single combined document with differentiated metadata
+            turn_metadata = {
+                **base_metadata,
+                "speaker": "conversation_turn",
+                "user_query": user_query[:500],
+                "assistant_summary": final_answer[:500],
+            }
             combined_content = f"""Conversation Turn:
 User Query: {user_query}
 Assistant Response: {final_answer}
 Routing Decision: {router_decision.decision}
 Confidence: {router_decision.confidence}"""
 
-            combined_doc_id = self.memory_manager.store(
-                content=combined_content,
-                metadata=combined_metadata
+            doc_id = self.memory_manager.store(
+                content=combined_content, metadata=turn_metadata
             )
-            logger.info(f"Conversation turn stored in memory: {combined_doc_id}")
+            logger.info(f"Conversation turn stored in memory: {doc_id}")
 
         except Exception as e:
             # Don't crash the chat loop on storage failures
             logger.error(f"Failed to store conversation in memory: {e}", exc_info=True)
             # Optionally inform user of storage failure
             if self.args.verbose:
-                self.console.print(f"[yellow]⚠ Warning: Conversation not saved to memory[/yellow]")
+                self.console.print(
+                    f"[yellow]⚠ Warning: Conversation not saved to memory[/yellow]"
+                )
 
     def run(self) -> int:
         """
@@ -528,7 +558,9 @@ Confidence: {router_decision.confidence}"""
         while True:
             try:
                 # Get user input
-                user_query = self.console.input("\n[bold blue]You:[/bold blue] ").strip()
+                user_query = self.console.input(
+                    "\n[bold blue]You:[/bold blue] "
+                ).strip()
 
                 if not user_query:
                     continue
@@ -555,7 +587,9 @@ Confidence: {router_decision.confidence}"""
                     continue
 
                 # Execution phase
-                final_answer = self._handle_execution_phase(router_decision.decision, user_query)
+                final_answer = self._handle_execution_phase(
+                    router_decision.decision, user_query
+                )
 
                 # Display result
                 self._display_result(final_answer, router_decision)
@@ -571,9 +605,7 @@ Confidence: {router_decision.confidence}"""
                 break
             except Exception as e:
                 resolution = self.error_handler.handle_error(
-                    exception=e,
-                    operation="chat_loop",
-                    component="orchestrator"
+                    exception=e, operation="chat_loop", component="orchestrator"
                 )
                 self.console.print(f"[red]✗ {resolution.recovery_hint}[/red]")
                 continue

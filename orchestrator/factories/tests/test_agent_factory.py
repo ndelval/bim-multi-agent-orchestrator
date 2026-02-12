@@ -15,14 +15,13 @@ import pytest
 from unittest.mock import Mock, patch, MagicMock
 from orchestrator.factories.agent_factory import (
     AgentFactory,
-    USING_LANGCHAIN,
     BaseAgentTemplate,
     OrchestratorAgentTemplate,
     ResearcherAgentTemplate,
     PlannerAgentTemplate,
     ImplementerAgentTemplate,
     TesterAgentTemplate,
-    WriterAgentTemplate
+    WriterAgentTemplate,
 )
 from orchestrator.core.config import AgentConfig
 from orchestrator.core.exceptions import AgentCreationError, TemplateError
@@ -35,6 +34,17 @@ class TestAgentFactoryBasics:
     def factory(self):
         """Create factory instance for testing."""
         return AgentFactory()
+
+    @pytest.fixture
+    def base_config(self):
+        """Create a base AgentConfig for testing."""
+        return AgentConfig(
+            name="TestAgent",
+            role="Test Role",
+            goal="Test Goal",
+            backstory="Test Backstory",
+            instructions="Test Instructions",
+        )
 
     def test_factory_initializes_with_templates(self, factory):
         """P0-1: Factory should initialize with 6 default templates."""
@@ -59,13 +69,12 @@ class TestAgentFactoryBasics:
         assert agent.backstory == "Test Backstory"
 
     def test_factory_backend_detection(self, factory):
-        """P0-13: Verify factory correctly detects available backend."""
-        # Factory should use global USING_LANGCHAIN flag
-        assert isinstance(USING_LANGCHAIN, bool)
-
-        # Should have consistent backend throughout session
-        backend_type = "langchain" if USING_LANGCHAIN else "praisonai"
-        assert backend_type in ["langchain", "praisonai"]
+        """P0-13: Verify factory uses LangChain backend."""
+        # Factory always uses LangChain backend (PraisonAI removed)
+        # Verify the factory can create agents (implying LangChain is available)
+        config = factory.get_default_config("orchestrator")
+        agent = factory.create_agent(config, agent_type="orchestrator")
+        assert agent is not None
 
 
 class TestAgentTypeInference:
@@ -82,7 +91,7 @@ class TestAgentTypeInference:
             role="Manager",
             goal="Coordinate",
             backstory="Expert",
-            instructions="Manage"
+            instructions="Manage",
         )
         inferred_type = factory._infer_agent_type(config)
         assert inferred_type == "orchestrator"
@@ -94,7 +103,7 @@ class TestAgentTypeInference:
             role="Research Specialist",
             goal="Research",
             backstory="Researcher",
-            instructions="Research"
+            instructions="Research",
         )
         inferred_type = factory._infer_agent_type(config)
         assert inferred_type == "researcher"
@@ -106,7 +115,7 @@ class TestAgentTypeInference:
             role="Agent",
             goal="Plan comprehensive strategy",
             backstory="Planner",
-            instructions="Plan"
+            instructions="Plan",
         )
         inferred_type = factory._infer_agent_type(config)
         assert inferred_type == "planner"
@@ -118,7 +127,7 @@ class TestAgentTypeInference:
             role="Developer",
             goal="Build",
             backstory="Implementation specialist with coding expertise",
-            instructions="Implement"
+            instructions="Implement",
         )
         inferred_type = factory._infer_agent_type(config)
         assert inferred_type == "implementer"
@@ -130,7 +139,7 @@ class TestAgentTypeInference:
             role="Testing Specialist",
             goal="Ensure quality",
             backstory="Expert tester",
-            instructions="Test thoroughly"
+            instructions="Test thoroughly",
         )
         inferred_type = factory._infer_agent_type(config)
         assert inferred_type == "tester"
@@ -142,7 +151,7 @@ class TestAgentTypeInference:
             role="Documentation Specialist",
             goal="Write documentation",
             backstory="Technical writer",
-            instructions="Document"
+            instructions="Document",
         )
         inferred_type = factory._infer_agent_type(config)
         assert inferred_type == "writer"
@@ -165,14 +174,10 @@ class TestTemplateCompatibility:
         assert agent.name == "Researcher"
 
         # Verify tools attribute exists (tools may be empty if not available)
-        if USING_LANGCHAIN:
-            # LangChain agents should have tools list attribute
-            assert hasattr(agent, 'tools')
-            assert isinstance(agent.tools, list)
-            # Note: Tools list may be empty if DuckDuckGo not installed
-        else:
-            # PraisonAI agents have tools as well
-            assert agent is not None
+        # LangChain agents should have tools list attribute
+        assert hasattr(agent, "tools")
+        assert isinstance(agent.tools, list)
+        # Note: Tools list may be empty if DuckDuckGo not installed
 
     def test_orchestrator_template_creates_agent_without_tools(self, factory):
         """P0-7/8: Orchestrator template should work in both backends."""
@@ -184,13 +189,19 @@ class TestTemplateCompatibility:
         assert agent.name == "Orchestrator"
 
         # Orchestrators don't use tools directly
-        if USING_LANGCHAIN:
-            assert hasattr(agent, 'tools')
-            # May be empty or minimal tools
+        assert hasattr(agent, "tools")
+        # May be empty or minimal tools
 
     def test_all_templates_produce_valid_agents(self, factory):
         """P0-15: All 6 templates must produce valid agents."""
-        templates = ["orchestrator", "researcher", "planner", "implementer", "tester", "writer"]
+        templates = [
+            "orchestrator",
+            "researcher",
+            "planner",
+            "implementer",
+            "tester",
+            "writer",
+        ]
 
         for template_name in templates:
             config = factory.get_default_config(template_name)
@@ -198,10 +209,12 @@ class TestTemplateCompatibility:
 
             # Verify agent has required attributes
             assert agent is not None, f"Template {template_name} failed to create agent"
-            assert hasattr(agent, 'name'), f"{template_name} agent missing 'name'"
-            assert hasattr(agent, 'role'), f"{template_name} agent missing 'role'"
-            assert hasattr(agent, 'goal'), f"{template_name} agent missing 'goal'"
-            assert hasattr(agent, 'backstory'), f"{template_name} agent missing 'backstory'"
+            assert hasattr(agent, "name"), f"{template_name} agent missing 'name'"
+            assert hasattr(agent, "role"), f"{template_name} agent missing 'role'"
+            assert hasattr(agent, "goal"), f"{template_name} agent missing 'goal'"
+            assert hasattr(
+                agent, "backstory"
+            ), f"{template_name} agent missing 'backstory'"
 
 
 class TestErrorHandling:
@@ -210,6 +223,17 @@ class TestErrorHandling:
     @pytest.fixture
     def factory(self):
         return AgentFactory()
+
+    @pytest.fixture
+    def base_config(self):
+        """Create a base AgentConfig for testing."""
+        return AgentConfig(
+            name="TestAgent",
+            role="Test Role",
+            goal="Test Goal",
+            backstory="Test Backstory",
+            instructions="Test Instructions",
+        )
 
     def test_create_agent_with_invalid_template_type(self, factory, base_config):
         """P0-5: Invalid template type should raise AgentCreationError."""
@@ -223,7 +247,7 @@ class TestErrorHandling:
             role="Role",
             goal="Goal",
             backstory="Backstory",
-            instructions="Instructions"
+            instructions="Instructions",
         )
 
         # Should either handle gracefully or raise clear error
@@ -246,7 +270,7 @@ class TestErrorHandling:
                 role="Role",
                 goal="Goal",
                 backstory="Backstory",
-                instructions="Instructions"
+                instructions="Instructions",
             )
             factory.create_agent(invalid_config, agent_type="invalid_type")
         except AgentCreationError:
@@ -261,13 +285,15 @@ class TestErrorHandling:
             role="Role",
             goal="Goal",
             backstory="Backstory",
-            instructions="Instructions"
+            instructions="Instructions",
         )
         agent = factory.create_agent(valid_config)
         assert agent is not None
 
 
-@pytest.mark.skip(reason="Mode parameter not yet implemented - will be enabled after implementation")
+@pytest.mark.skip(
+    reason="Mode parameter not yet implemented - will be enabled after implementation"
+)
 class TestModeParameter:
     """Future P0 Tests: Mode parameter functionality (to be implemented)."""
 
@@ -278,24 +304,25 @@ class TestModeParameter:
     def test_create_agent_with_explicit_langchain_mode(self, factory, base_config):
         """P0-2: FUTURE - Verify explicit mode='langchain' creates LangChainAgent."""
         # This test will fail until mode parameter is implemented
-        agent = factory.create_agent(base_config, mode='langchain')
+        agent = factory.create_agent(base_config, mode="langchain")
 
         from orchestrator.integrations.langchain_integration import LangChainAgent
+
         assert isinstance(agent, LangChainAgent)
 
     def test_create_agent_with_explicit_praisonai_mode(self, factory, base_config):
         """P0-3: FUTURE - Verify explicit mode='praisonai' creates PraisonAI Agent."""
         # This test will fail until mode parameter is implemented
-        agent = factory.create_agent(base_config, mode='praisonai')
+        agent = factory.create_agent(base_config, mode="praisonai")
 
         # Should create PraisonAI agent
         assert agent is not None
-        assert hasattr(agent, 'name')
+        assert hasattr(agent, "name")
 
     def test_create_agent_auto_mode_detection(self, factory, base_config):
         """P0-4: FUTURE - Test auto mode detection."""
         # This test will fail until mode parameter is implemented
-        agent = factory.create_agent(base_config, mode='auto')
+        agent = factory.create_agent(base_config, mode="auto")
 
         # Should auto-detect and create agent
         assert agent is not None
@@ -304,17 +331,17 @@ class TestModeParameter:
         """P0-5: FUTURE - Invalid mode should raise AgentCreationError."""
         # This test will fail until mode parameter is implemented
         with pytest.raises(AgentCreationError, match="Invalid mode"):
-            factory.create_agent(base_config, mode='invalid_mode')
+            factory.create_agent(base_config, mode="invalid_mode")
 
     def test_mode_switching_preserves_factory_state(self, factory, base_config):
         """P0-14: FUTURE - Mode switching should not corrupt state."""
         # This test will fail until mode parameter is implemented
 
         # Create agent with langchain mode
-        agent1 = factory.create_agent(base_config, mode='langchain')
+        agent1 = factory.create_agent(base_config, mode="langchain")
 
         # Switch to praisonai mode
-        agent2 = factory.create_agent(base_config, mode='praisonai')
+        agent2 = factory.create_agent(base_config, mode="praisonai")
 
         # Factory should still be functional
         assert len(factory.list_templates()) == 6
@@ -334,7 +361,7 @@ class TestBackwardCompatibility:
             role="Test Role",
             goal="Test Goal",
             backstory="Test Backstory",
-            instructions="Test Instructions"
+            instructions="Test Instructions",
         )
 
         # Should work exactly as before
@@ -364,7 +391,7 @@ class TestBackwardCompatibility:
                 role=f"Role{i}",
                 goal=f"Goal{i}",
                 backstory=f"Backstory{i}",
-                instructions=f"Instructions{i}"
+                instructions=f"Instructions{i}",
             )
             for i in range(3)
         ]

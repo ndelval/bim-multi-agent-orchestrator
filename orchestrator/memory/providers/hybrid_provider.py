@@ -46,11 +46,14 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
         self._rerank_executor: Optional["ThreadPoolExecutor"] = None
         self._rerank_max_workers = 1
         self._score_cache: Dict[str, float] = {}
-        self._embedding_model = (self.embedder_config.config or {}).get("model", "text-embedding-3-small")
+        self._embedding_model = (self.embedder_config.config or {}).get(
+            "model", "text-embedding-3-small"
+        )
         self._embedding_dimensions = get_embedding_dimensions(self._embedding_model)
         self._graph_config: Dict[str, Any] = {}
         self._graph_driver = None
         self._graph_session_cache = threading.local()
+        self._openai_client = None
 
     def initialize(self, config: Dict[str, Any]) -> None:
         try:
@@ -138,7 +141,9 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
 
         return reranked[:limit]
 
-    def update(self, ref_id: str, content: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+    def update(
+        self, ref_id: str, content: str, metadata: Optional[Dict[str, Any]] = None
+    ) -> None:
         meta = self._normalize_metadata(metadata)
         meta["id"] = ref_id
         self.delete(ref_id)
@@ -184,7 +189,7 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
             self._lex_conn = None
         if self._vector_client:
             try:
-                close = getattr(self._vector_client, 'close', None)
+                close = getattr(self._vector_client, "close", None)
                 if callable(close):
                     close()
             except Exception:
@@ -212,15 +217,23 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
     def _initialize_vector_store(self, vector_cfg: Dict[str, Any]) -> None:
         provider = (vector_cfg.get("provider") or "chromadb").lower()
         if provider != "chromadb":
-            raise ProviderError("Hybrid provider currently supports only 'chromadb' as vector store")
+            raise ProviderError(
+                "Hybrid provider currently supports only 'chromadb' as vector store"
+            )
 
         try:
             import chromadb
             from chromadb.config import Settings as ChromaSettings
         except ImportError as exc:
-            raise ProviderError("chromadb package required for Hybrid provider. Install with 'pip install chromadb'.") from exc
+            raise ProviderError(
+                "chromadb package required for Hybrid provider. Install with 'pip install chromadb'."
+            ) from exc
 
-        path = vector_cfg.get("config", {}).get("path") or vector_cfg.get("path") or ".orchestrator/hybrid_chroma"
+        path = (
+            vector_cfg.get("config", {}).get("path")
+            or vector_cfg.get("path")
+            or ".orchestrator/hybrid_chroma"
+        )
         Path(path).mkdir(parents=True, exist_ok=True)
 
         self._vector_path = path
@@ -229,7 +242,11 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
             anonymized_telemetry=False,
         )
         self._vector_client = chromadb.PersistentClient(path=path, settings=settings)
-        collection_name = vector_cfg.get("config", {}).get("collection") or vector_cfg.get("collection") or "hybrid_memory"
+        collection_name = (
+            vector_cfg.get("config", {}).get("collection")
+            or vector_cfg.get("collection")
+            or "hybrid_memory"
+        )
         try:
             self._vector_collection = self._vector_client.get_or_create_collection(
                 name=collection_name,
@@ -280,7 +297,9 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
 
         if lexical_cfg.get("cleanup_interval"):
             try:
-                self._lex_cleanup_every = max(1, int(lexical_cfg.get("cleanup_interval")))
+                self._lex_cleanup_every = max(
+                    1, int(lexical_cfg.get("cleanup_interval"))
+                )
             except ValueError:
                 pass
 
@@ -296,13 +315,18 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
 
         try:
             from sentence_transformers import CrossEncoder  # noqa: F401
+
             self._rerank_available = True
             from concurrent.futures import ThreadPoolExecutor
 
-            self._rerank_executor = ThreadPoolExecutor(max_workers=self._rerank_max_workers)
+            self._rerank_executor = ThreadPoolExecutor(
+                max_workers=self._rerank_max_workers
+            )
         except ImportError:
             self._rerank_available = False
-            logger.warning("sentence-transformers not installed; hybrid reranking disabled")
+            logger.warning(
+                "sentence-transformers not installed; hybrid reranking disabled"
+            )
 
     def _initialize_graph(self, graph_cfg: Dict[str, Any]) -> None:
         """
@@ -329,17 +353,23 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
         try:
             from neo4j import GraphDatabase
         except ImportError:
-            logger.warning("neo4j-driver not installed; running in degraded mode (vector + lexical only)")
+            logger.warning(
+                "neo4j-driver not installed; running in degraded mode (vector + lexical only)"
+            )
             return
 
         # Initialize with retry logic
-        self._graph_driver = self._initialize_neo4j_with_retry(uri, user, password, max_retries=3)
+        self._graph_driver = self._initialize_neo4j_with_retry(
+            uri, user, password, max_retries=3
+        )
 
         if self._graph_driver:
             self._graph_config = {"uri": uri, "user": user}
             logger.info("Hybrid graph synchronization enabled")
         else:
-            logger.warning("Neo4j initialization failed after retries; running in degraded mode (vector + lexical only)")
+            logger.warning(
+                "Neo4j initialization failed after retries; running in degraded mode (vector + lexical only)"
+            )
 
     def _initialize_neo4j_with_retry(
         self,
@@ -372,11 +402,15 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
 
                 # Verify connectivity with health check
                 if self._check_neo4j_health(driver):
-                    logger.info(f"Neo4j connection established on attempt {attempt + 1}/{max_retries}")
+                    logger.info(
+                        f"Neo4j connection established on attempt {attempt + 1}/{max_retries}"
+                    )
                     return driver
                 else:
                     driver.close()
-                    logger.warning(f"Neo4j health check failed on attempt {attempt + 1}/{max_retries}")
+                    logger.warning(
+                        f"Neo4j health check failed on attempt {attempt + 1}/{max_retries}"
+                    )
 
             except AuthError as e:
                 logger.error(f"Neo4j authentication failed: {e}")
@@ -394,7 +428,7 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
 
             # Exponential backoff before retry
             if attempt < max_retries - 1:
-                backoff_time = 2 ** attempt  # 1s, 2s, 4s
+                backoff_time = 2**attempt  # 1s, 2s, 4s
                 logger.info(f"Retrying Neo4j connection in {backoff_time}s...")
                 time.sleep(backoff_time)
 
@@ -441,14 +475,19 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
         try:
             from openai import OpenAI
 
-            client = OpenAI()
-            response = client.embeddings.create(model=self._embedding_model, input=text)
+            if self._openai_client is None:
+                self._openai_client = OpenAI()
+            response = self._openai_client.embeddings.create(
+                model=self._embedding_model, input=text
+            )
             return list(response.data[0].embedding)
         except Exception as e:
             logger.warning(f"Failed to generate embedding: {e}")
             return None
 
-    def _store_lexical(self, doc_id: str, content: str, metadata: Dict[str, Any]) -> None:
+    def _store_lexical(
+        self, doc_id: str, content: str, metadata: Dict[str, Any]
+    ) -> None:
         timestamp = time.time()
         meta_json = json.dumps(metadata or {})
         with self._lex_lock:
@@ -484,30 +523,51 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
         rows = cursor.fetchall()
         if rows:
             rowids = [row[0] for row in rows]
-            cursor.executemany("DELETE FROM documents WHERE rowid = ?", [(rid,) for rid in rowids])
-            cursor.executemany("DELETE FROM documents_fts WHERE rowid = ?", [(rid,) for rid in rowids])
+            cursor.executemany(
+                "DELETE FROM documents WHERE rowid = ?", [(rid,) for rid in rowids]
+            )
+            cursor.executemany(
+                "DELETE FROM documents_fts WHERE rowid = ?", [(rid,) for rid in rowids]
+            )
 
         if self._lex_ttl_seconds:
             cutoff = time.time() - self._lex_ttl_seconds
-            cursor.execute("SELECT rowid FROM documents WHERE created_at < ?", (cutoff,))
+            cursor.execute(
+                "SELECT rowid FROM documents WHERE created_at < ?", (cutoff,)
+            )
             rows = cursor.fetchall()
             if rows:
                 rowids = [row[0] for row in rows]
-                cursor.executemany("DELETE FROM documents WHERE rowid = ?", [(rid,) for rid in rowids])
-                cursor.executemany("DELETE FROM documents_fts WHERE rowid = ?", [(rid,) for rid in rowids])
+                cursor.executemany(
+                    "DELETE FROM documents WHERE rowid = ?", [(rid,) for rid in rowids]
+                )
+                cursor.executemany(
+                    "DELETE FROM documents_fts WHERE rowid = ?",
+                    [(rid,) for rid in rowids],
+                )
 
         if self._lex_max_entries:
             cursor.execute("SELECT COUNT(*) FROM documents")
             count = cursor.fetchone()[0]
             if count > self._lex_max_entries:
                 overflow = count - self._lex_max_entries
-                cursor.execute("SELECT rowid FROM documents ORDER BY created_at ASC LIMIT ?", (overflow,))
+                cursor.execute(
+                    "SELECT rowid FROM documents ORDER BY created_at ASC LIMIT ?",
+                    (overflow,),
+                )
                 rows = cursor.fetchall()
                 rowids = [row[0] for row in rows]
-                cursor.executemany("DELETE FROM documents WHERE rowid = ?", [(rid,) for rid in rowids])
-                cursor.executemany("DELETE FROM documents_fts WHERE rowid = ?", [(rid,) for rid in rowids])
+                cursor.executemany(
+                    "DELETE FROM documents WHERE rowid = ?", [(rid,) for rid in rowids]
+                )
+                cursor.executemany(
+                    "DELETE FROM documents_fts WHERE rowid = ?",
+                    [(rid,) for rid in rowids],
+                )
 
-    def _upsert_graph(self, doc_id: str, content: str, metadata: Dict[str, Any]) -> None:
+    def _upsert_graph(
+        self, doc_id: str, content: str, metadata: Dict[str, Any]
+    ) -> None:
         """
         Upsert document to Neo4j graph store.
 
@@ -545,7 +605,9 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
             "effective_date": metadata.get("effective_date"),
             "language": metadata.get("language"),
             "source_url": metadata.get("source_url"),
-            "tags": metadata.get("tags") if isinstance(metadata.get("tags"), list) else None,
+            "tags": (
+                metadata.get("tags") if isinstance(metadata.get("tags"), list) else None
+            ),
             "chunk_id": chunk_id,
             "section": metadata.get("section"),
             "page_range": metadata.get("page_range"),
@@ -554,7 +616,11 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
             "ingest_timestamp": metadata.get("ingest_timestamp"),
             "section_id": section_id,
             "section_title": metadata.get("section"),
-            "references": metadata.get("references") if isinstance(metadata.get("references"), list) else [],
+            "references": (
+                metadata.get("references")
+                if isinstance(metadata.get("references"), list)
+                else []
+            ),
         }
 
         try:
@@ -623,7 +689,9 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
                 params,
             )
 
-    def _search_vector(self, query: str, filters: Dict[str, Any], limit: int) -> List[Dict[str, Any]]:
+    def _search_vector(
+        self, query: str, filters: Dict[str, Any], limit: int
+    ) -> List[Dict[str, Any]]:
         if not self._vector_collection:
             return []
 
@@ -651,23 +719,31 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
             for idx, doc_id in enumerate(ids):
                 if doc_id is None:
                     continue
-                distance = distances[idx] if distances is not None and idx < len(distances) else None
+                distance = (
+                    distances[idx]
+                    if distances is not None and idx < len(distances)
+                    else None
+                )
                 score = 0.0
                 if distance is not None:
                     score = 1.0 / (1.0 + distance)
-                vector_hits.append({
-                    "id": doc_id,
-                    "content": docs[idx] if docs and idx < len(docs) else "",
-                    "metadata": metas[idx] if metas and idx < len(metas) else {},
-                    "score": score,
-                    "source": "vector",
-                })
+                vector_hits.append(
+                    {
+                        "id": doc_id,
+                        "content": docs[idx] if docs and idx < len(docs) else "",
+                        "metadata": metas[idx] if metas and idx < len(metas) else {},
+                        "score": score,
+                        "source": "vector",
+                    }
+                )
             return vector_hits
         except Exception as e:
             logger.warning(f"Hybrid vector search failed: {e}")
             return []
 
-    def _search_lexical(self, query: str, filters: Dict[str, Any], limit: int) -> List[Dict[str, Any]]:
+    def _search_lexical(
+        self, query: str, filters: Dict[str, Any], limit: int
+    ) -> List[Dict[str, Any]]:
         if not self._lex_conn:
             return []
 
@@ -722,13 +798,15 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
                     meta = json.loads(row[2])
                 except json.JSONDecodeError:
                     meta = {}
-            results.append({
-                "id": row[0],
-                "content": row[1],
-                "metadata": meta,
-                "score": float(row[3] or 0.0),
-                "source": "lexical",
-            })
+            results.append(
+                {
+                    "id": row[0],
+                    "content": row[1],
+                    "metadata": meta,
+                    "score": float(row[3] or 0.0),
+                    "source": "lexical",
+                }
+            )
         return results
 
     @staticmethod
@@ -738,7 +816,9 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
         clauses = []
         for key, value in filters.items():
             if key in {"user_id", "run_id"}:
-                clauses.append({key: {"$in": [value, "global" if key == "user_id" else "library"]}})
+                clauses.append(
+                    {key: {"$in": [value, "global" if key == "user_id" else "library"]}}
+                )
             elif isinstance(value, (list, tuple, set)):
                 clauses.append({key: {"$in": list(value)}})
             else:
@@ -753,7 +833,7 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
     def _sanitize_match_query(query: str) -> str:
         if not query:
             return "*"
-        cleaned = query.replace('"', ' ')
+        cleaned = query.replace('"', " ")
         for ch in "?.,;:!()[]{}<>|/\\":
             cleaned = cleaned.replace(ch, " ")
         cleaned = " ".join(cleaned.split())
@@ -765,7 +845,9 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
         meta.setdefault("ingest_timestamp", current_timestamp())
         if "tags" in meta and isinstance(meta["tags"], str):
             try:
-                meta["tags"] = [tag.strip() for tag in meta["tags"].split(",") if tag.strip()]
+                meta["tags"] = [
+                    tag.strip() for tag in meta["tags"].split(",") if tag.strip()
+                ]
             except Exception:
                 meta["tags"] = [meta["tags"]]
         elif "tags" in meta and not isinstance(meta["tags"], list):
@@ -938,7 +1020,9 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
         )
 
         if not candidate_ids:
-            logger.info("Hybrid graph retrieve: no graph matches, falling back to standard retrieval")
+            logger.info(
+                "Hybrid graph retrieve: no graph matches, falling back to standard retrieval"
+            )
             return self.retrieve_filtered(
                 query,
                 limit=limit,
@@ -957,10 +1041,16 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
         vector_filters["chunk_id"] = candidate_ids
         lexical_filters = dict(filters)
 
-        vector_results = self._search_vector(query, vector_filters, max(limit, self._rerank_top_k))
+        vector_results = self._search_vector(
+            query, vector_filters, max(limit, self._rerank_top_k)
+        )
         self._log_hits("graph_vector", vector_results)
-        lexical_results = self._search_lexical(query, lexical_filters, max(limit, self._rerank_top_k))
-        lexical_results = [res for res in lexical_results if res.get("id") in candidate_ids]
+        lexical_results = self._search_lexical(
+            query, lexical_filters, max(limit, self._rerank_top_k)
+        )
+        lexical_results = [
+            res for res in lexical_results if res.get("id") in candidate_ids
+        ]
         self._log_hits("graph_lexical", lexical_results)
 
         fused = self._reciprocal_rank_fusion([vector_results, lexical_results])
@@ -998,7 +1088,9 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
 
         with self._lex_lock:
             cursor = self._lex_conn.cursor()
-            rows = cursor.execute("SELECT id, content, metadata FROM documents").fetchall()
+            rows = cursor.execute(
+                "SELECT id, content, metadata FROM documents"
+            ).fetchall()
 
         count = 0
         for row_id, content, metadata_json in rows:
@@ -1015,24 +1107,31 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
             count += 1
         return count
 
-    def _reciprocal_rank_fusion(self, result_sets: List[List[Dict[str, Any]]], k: int = 60) -> List[Dict[str, Any]]:
+    def _reciprocal_rank_fusion(
+        self, result_sets: List[List[Dict[str, Any]]], k: int = 60
+    ) -> List[Dict[str, Any]]:
         fused: Dict[str, Dict[str, Any]] = {}
         for result_set in result_sets:
             for rank, item in enumerate(result_set):
                 doc_id = item.get("id")
                 if not doc_id:
                     continue
-                fused.setdefault(doc_id, {
-                    "id": doc_id,
-                    "content": item.get("content", ""),
-                    "metadata": item.get("metadata", {}),
-                    "score": 0.0,
-                })
+                fused.setdefault(
+                    doc_id,
+                    {
+                        "id": doc_id,
+                        "content": item.get("content", ""),
+                        "metadata": item.get("metadata", {}),
+                        "score": 0.0,
+                    },
+                )
                 fused[doc_id]["score"] += 1.0 / (k + rank + 1)
 
         return sorted(fused.values(), key=lambda hit: hit["score"], reverse=True)
 
-    def _rerank(self, query: str, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _rerank(
+        self, query: str, candidates: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
         if not self._rerank_enabled or not self._rerank_available or not candidates:
             for item in candidates:
                 item.setdefault("provider", "hybrid")
@@ -1043,7 +1142,9 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
         if self._rerank_executor is None:
             return candidates
 
-        future: Future = self._rerank_executor.submit(self._rerank_sync, query, candidates)
+        future: Future = self._rerank_executor.submit(
+            self._rerank_sync, query, candidates
+        )
         try:
             return future.result()
         except Exception as e:
@@ -1052,7 +1153,9 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
                 item.setdefault("provider", "hybrid")
             return candidates
 
-    def _rerank_sync(self, query: str, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _rerank_sync(
+        self, query: str, candidates: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
         top_candidates = candidates[: self._rerank_top_k]
         scored: List[Dict[str, Any]] = []
         for item in top_candidates:
@@ -1061,9 +1164,17 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
             cache_key = f"{doc_id}:{hash(content)}:{hash(query)}"
             score = self._score_cache.get(cache_key)
             if score is None:
-                score = float(self._score_with_cross_encoder(self._rerank_model_name, query, content))
+                score = float(
+                    self._score_with_cross_encoder(
+                        self._rerank_model_name, query, content
+                    )
+                )
                 if len(self._score_cache) > 2048:
-                    self._score_cache.clear()
+                    # Evict oldest 25% instead of clearing entire cache
+                    evict_count = len(self._score_cache) // 4
+                    keys_to_evict = list(self._score_cache.keys())[:evict_count]
+                    for k in keys_to_evict:
+                        del self._score_cache[k]
                 self._score_cache[cache_key] = score
             reranked_item = dict(item)
             reranked_item["score"] = score
@@ -1087,7 +1198,9 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
 
     @classmethod
     @lru_cache(maxsize=4096)
-    def _score_with_cross_encoder(cls, model_name: str, query: str, document: str) -> float:
+    def _score_with_cross_encoder(
+        cls, model_name: str, query: str, document: str
+    ) -> float:
         model = cls._load_cross_encoder(model_name)
         score = model.predict([(query, document)])
         return float(score[0]) if hasattr(score, "__getitem__") else float(score)
@@ -1096,7 +1209,7 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
         """Create a GraphRAG lookup tool if graph support is enabled."""
         if not self._graph_driver:
             raise ProviderError("Graph operations not available - Neo4j not configured")
-        
+
         def graph_rag_lookup(
             query: str,
             *,
@@ -1118,7 +1231,7 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
                 run_id=run_id or default_run_id,
                 agent_id=None,
             )
-        
+
         # Set tool metadata
         graph_rag_lookup.__name__ = "graph_rag_lookup"
         graph_rag_lookup.__doc__ = """Retrieve relevant documents using hybrid search with graph enhancement.
@@ -1135,5 +1248,5 @@ class HybridRAGMemoryProvider(BaseMemoryProvider):
         Returns:
             List of documents with content, metadata, and relevance scores
         """
-        
+
         return graph_rag_lookup

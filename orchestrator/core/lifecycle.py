@@ -8,7 +8,6 @@ lifecycle concerns from initialization and execution logic.
 
 import logging
 from typing import Optional, Callable, Any
-from ..workflow.workflow_engine import WorkflowMetrics
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +24,7 @@ class LifecycleManager:
         """Initialize the lifecycle manager."""
         # Workflow callbacks
         self.on_workflow_start: Optional[Callable[[], None]] = None
-        self.on_workflow_complete: Optional[Callable[[WorkflowMetrics], None]] = None
+        self.on_workflow_complete: Optional[Callable[[Any], None]] = None
 
         # Task callbacks
         self.on_task_start: Optional[Callable[[str, Any], None]] = None
@@ -45,8 +44,7 @@ class LifecycleManager:
         logger.debug("Registered workflow start callback")
 
     def register_workflow_complete_callback(
-        self,
-        callback: Callable[[WorkflowMetrics], None]
+        self, callback: Callable[[Any], None]
     ) -> None:
         """
         Register callback for workflow completion event.
@@ -58,8 +56,7 @@ class LifecycleManager:
         logger.debug("Registered workflow complete callback")
 
     def register_task_start_callback(
-        self,
-        callback: Callable[[str, Any], None]
+        self, callback: Callable[[str, Any], None]
     ) -> None:
         """
         Register callback for task start event.
@@ -71,8 +68,7 @@ class LifecycleManager:
         logger.debug("Registered task start callback")
 
     def register_task_complete_callback(
-        self,
-        callback: Callable[[str, Any], None]
+        self, callback: Callable[[str, Any], None]
     ) -> None:
         """
         Register callback for task completion event.
@@ -102,7 +98,7 @@ class LifecycleManager:
             except Exception as e:
                 logger.error(f"Error in workflow start callback: {e}")
 
-    def emit_workflow_complete(self, metrics: WorkflowMetrics) -> None:
+    def emit_workflow_complete(self, metrics: Any) -> None:
         """
         Emit workflow completion event.
 
@@ -166,7 +162,7 @@ class LifecycleManager:
         """
         logger.warning(f"Task failed: {task_name}")
 
-        if self.on_error and hasattr(execution, 'error'):
+        if self.on_error and hasattr(execution, "error"):
             try:
                 self.on_error(execution.error)
                 logger.debug(f"Emitted error event for task: {task_name}")
@@ -195,10 +191,10 @@ class LifecycleManager:
             Dictionary of callback names to callback functions
         """
         return {
-            'on_task_start': self.emit_task_start,
-            'on_task_complete': self.emit_task_complete,
-            'on_task_fail': self.emit_task_fail,
-            'on_workflow_complete': self.emit_workflow_complete,
+            "on_task_start": self.emit_task_start,
+            "on_task_complete": self.emit_task_complete,
+            "on_task_fail": self.emit_task_fail,
+            "on_workflow_complete": self.emit_workflow_complete,
         }
 
     def reset(self) -> None:

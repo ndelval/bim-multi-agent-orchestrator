@@ -15,7 +15,6 @@ from ..factories.agent_factory import AgentFactory
 from ..factories.task_factory import TaskFactory
 from ..factories.graph_factory import GraphFactory
 from ..memory.memory_manager import MemoryManager
-from ..workflow.workflow_engine import WorkflowEngine
 from .config import OrchestratorConfig, AgentConfig
 from .exceptions import AgentCreationError, OrchestratorError
 
@@ -49,7 +48,9 @@ class OrchestratorInitializer:
             Initialized MemoryManager instance or None if not configured
         """
         if self.config.memory is None:
-            logger.debug("Memory configuration not provided, skipping memory initialization")
+            logger.debug(
+                "Memory configuration not provided, skipping memory initialization"
+            )
             return None
 
         try:
@@ -59,43 +60,6 @@ class OrchestratorInitializer:
         except Exception as e:
             logger.error(f"Failed to initialize memory manager: {str(e)}")
             raise OrchestratorError(f"Memory initialization failed: {str(e)}")
-
-    def initialize_workflow_engine(self,
-                                   on_task_start=None,
-                                   on_task_complete=None,
-                                   on_task_fail=None,
-                                   on_workflow_complete=None) -> WorkflowEngine:
-        """
-        Initialize workflow engine with callbacks.
-
-        Args:
-            on_task_start: Callback for task start events
-            on_task_complete: Callback for task completion events
-            on_task_fail: Callback for task failure events
-            on_workflow_complete: Callback for workflow completion events
-
-        Returns:
-            Initialized WorkflowEngine instance
-        """
-        try:
-            workflow_engine = WorkflowEngine(
-                process_type=self.config.process,
-                max_concurrent_tasks=5,
-                max_retries=3,
-                timeout=None,
-            )
-
-            # Register callbacks
-            workflow_engine.on_task_start = on_task_start
-            workflow_engine.on_task_complete = on_task_complete
-            workflow_engine.on_task_fail = on_task_fail
-            workflow_engine.on_workflow_complete = on_workflow_complete
-
-            logger.info("Workflow engine initialized successfully")
-            return workflow_engine
-        except Exception as e:
-            logger.error(f"Failed to initialize workflow engine: {str(e)}")
-            raise OrchestratorError(f"Workflow engine initialization failed: {str(e)}")
 
     def create_agents(self) -> Dict[str, Agent]:
         """
@@ -122,7 +86,9 @@ class OrchestratorInitializer:
         except Exception as e:
             raise AgentCreationError(f"Failed to create agents: {str(e)}")
 
-    def create_dynamic_tools(self, memory_manager: Optional[MemoryManager]) -> Dict[str, Any]:
+    def create_dynamic_tools(
+        self, memory_manager: Optional[MemoryManager]
+    ) -> Dict[str, Any]:
         """
         Create dynamic tools for agent use.
 
@@ -141,9 +107,9 @@ class OrchestratorInitializer:
 
                 graph_tool = memory_manager.create_graph_tool(
                     default_user_id=self.config.user_id,
-                    default_run_id=self.config.run_id
+                    default_run_id=self.config.run_id,
                 )
-                dynamic_tools['graph_rag_lookup'] = graph_tool
+                dynamic_tools["graph_rag_lookup"] = graph_tool
                 logger.info("Created GraphRAG tool for agent attachment")
             except Exception as e:
                 logger.warning(f"Failed to create GraphRAG tool: {e}")
@@ -151,8 +117,7 @@ class OrchestratorInitializer:
         return dynamic_tools
 
     def enrich_agent_configs_with_tools(
-        self,
-        dynamic_tools: Dict[str, Any]
+        self, dynamic_tools: Dict[str, Any]
     ) -> List[AgentConfig]:
         """
         Enrich agent configurations with dynamic tool names.
@@ -173,11 +138,13 @@ class OrchestratorInitializer:
             enriched = deepcopy(agent_config)
 
             # Add GraphRAG tool if agent instructions reference it
-            if 'graph_rag_lookup' in dynamic_tools:
-                if any(keyword in agent_config.instructions.lower()
-                       for keyword in ['graph_rag_lookup', 'graphrag']):
-                    if 'graph_rag_lookup' not in enriched.tools:
-                        enriched.tools.append('graph_rag_lookup')
+            if "graph_rag_lookup" in dynamic_tools:
+                if any(
+                    keyword in agent_config.instructions.lower()
+                    for keyword in ["graph_rag_lookup", "graphrag"]
+                ):
+                    if "graph_rag_lookup" not in enriched.tools:
+                        enriched.tools.append("graph_rag_lookup")
                         logger.debug(f"Added GraphRAG tool to agent {enriched.name}")
 
             enriched_agent_configs.append(enriched)
@@ -185,8 +152,7 @@ class OrchestratorInitializer:
         return enriched_agent_configs
 
     def create_langgraph_system(
-        self,
-        memory_manager: Optional[MemoryManager]
+        self, memory_manager: Optional[MemoryManager]
     ) -> tuple[GraphFactory, Any]:
         """
         Create the LangGraph StateGraph system with tool pre-registration.
@@ -214,7 +180,9 @@ class OrchestratorInitializer:
             self.config.agents = enriched_agent_configs
 
             # Create StateGraph
-            compiled_graph = self._create_stategraph(graph_factory, enriched_agent_configs)
+            compiled_graph = self._create_stategraph(
+                graph_factory, enriched_agent_configs
+            )
 
             logger.info("LangGraph system created successfully with tool integration")
             return graph_factory, compiled_graph
@@ -223,9 +191,7 @@ class OrchestratorInitializer:
             raise OrchestratorError(f"Failed to create LangGraph system: {str(e)}")
 
     def _create_stategraph(
-        self,
-        graph_factory: GraphFactory,
-        enriched_agent_configs: List[AgentConfig]
+        self, graph_factory: GraphFactory, enriched_agent_configs: List[AgentConfig]
     ) -> Any:
         """
         Create StateGraph based on configuration.
@@ -247,15 +213,17 @@ class OrchestratorInitializer:
 
             # Find router agent if available
             for agent_config in enriched_agent_configs:
-                if "orchestrator" in agent_config.name.lower() or "router" in agent_config.role.lower():
+                if (
+                    "orchestrator" in agent_config.name.lower()
+                    or "router" in agent_config.role.lower()
+                ):
                     router_agent = agent_config
                     break
 
             # Create chat graph
             other_agents = [a for a in enriched_agent_configs if a != router_agent]
             compiled_graph = graph_factory.create_chat_graph(
-                other_agents,
-                router_agent
+                other_agents, router_agent
             ).compile()
             logger.info(f"Created chat StateGraph with {len(other_agents)} agents")
 

@@ -8,6 +8,7 @@ with dynamic planning and execution capabilities.
 import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Any, Dict, List, Optional, Sequence, Union
 from dataclasses import asdict
 
@@ -83,6 +84,8 @@ class CLIBackendAdapter:
     agent orchestration systems, ensuring the user experience remains identical
     while leveraging the most advanced available technology.
     """
+
+    DEFAULT_TIMEOUT: float = 120.0  # seconds
 
     def __init__(self, memory_manager=None, llm="gpt-4o-mini", enable_parallel=True):
         """Initialize the adapter with automatic backend detection.
@@ -160,6 +163,36 @@ class CLIBackendAdapter:
             "stategraph_available": self.backend_info["stategraph"]["available"],
             "backend_details": self.backend_info,
         }
+
+    def _invoke_with_timeout(
+        self, compiled_graph: Any, initial_state: Any, timeout: Optional[float] = None
+    ) -> Any:
+        """Invoke a compiled StateGraph with timeout enforcement.
+
+        Args:
+            compiled_graph: Compiled LangGraph StateGraph
+            initial_state: Initial OrchestratorState
+            timeout: Timeout in seconds. Uses DEFAULT_TIMEOUT if None.
+
+        Returns:
+            StateGraph execution result
+
+        Raises:
+            TimeoutError: If execution exceeds the timeout
+        """
+        effective_timeout = timeout if timeout is not None else self.DEFAULT_TIMEOUT
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(compiled_graph.invoke, initial_state)
+            try:
+                return future.result(timeout=effective_timeout)
+            except FuturesTimeoutError:
+                logger.error(
+                    f"StateGraph execution timed out after {effective_timeout}s"
+                )
+                raise TimeoutError(
+                    f"Agent execution exceeded timeout of {effective_timeout} seconds"
+                )
 
     def execute_router(
         self, router_config: OrchestratorConfig, timeout: Optional[float] = None
@@ -299,9 +332,9 @@ class CLIBackendAdapter:
                 max_iterations=router_config.max_iterations,
             )
 
-            # Execute StateGraph
+            # Execute StateGraph with timeout enforcement
             logger.debug("Executing router with StateGraph backend")
-            result = compiled_router.invoke(initial_state)
+            result = self._invoke_with_timeout(compiled_router, initial_state, timeout)
 
             # Extract result in format compatible with legacy system
             return self._extract_result_from_state(result)
@@ -392,9 +425,9 @@ class CLIBackendAdapter:
                     recall_items=list(context.recall_items),
                 )
 
-                # Execute compiled StateGraph
+                # Execute compiled StateGraph with timeout enforcement
                 # NOTE: LangGraph's StateGraph.invoke() returns a dict, not an OrchestratorState object
-                result = compiled_graph.invoke(initial_state)
+                result = self._invoke_with_timeout(compiled_graph, initial_state)
 
                 # Post-execution validation: detect abnormal execution patterns
                 # DEFENSIVE FIX: Extract execution_depth from dict state (mimics OrchestratorState.execution_depth property)
@@ -576,7 +609,7 @@ class CLIBackendAdapter:
                 max_iterations=context.max_iterations,
             )
 
-            result = compiled_graph.invoke(initial_state)
+            result = self._invoke_with_timeout(compiled_graph, initial_state)
             return self._extract_result_from_state(result)
 
         except Exception as exc:
@@ -715,8 +748,12 @@ class CLIBackendAdapter:
         if isinstance(state, str):
             return state.strip()
 
-        if isinstance(state, dict) and "output" in state and not any(
-            key in state for key in ("messages", "final_output", "agent_outputs")
+        if (
+            isinstance(state, dict)
+            and "output" in state
+            and not any(
+                key in state for key in ("messages", "final_output", "agent_outputs")
+            )
         ):
             return state
 
@@ -809,10 +846,7 @@ class CLIBackendAdapter:
         return clean_output  # Legacy format for backward compatibility
 
     def _store_workflow_result(
-        self,
-        user_query: str,
-        final_output: Any,
-        agent_sequence: List[str]
+        self, user_query: str, final_output: Any, agent_sequence: List[str]
     ) -> None:
         """
         Store multi-agent workflow result in memory.
@@ -853,8 +887,7 @@ Agent Sequence: {" → ".join(agent_sequence)}
 Result: {result_text}"""
 
             doc_id = self.memory_manager.store(
-                content=workflow_content,
-                metadata=workflow_metadata
+                content=workflow_content, metadata=workflow_metadata
             )
 
             logger.info(f"Workflow result stored in memory: {doc_id}")

@@ -6,8 +6,7 @@ To integrate: review, test, then replace OrchestratorState in langchain_integrat
 """
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Type, Literal
-from typing_extensions import TypedDict
+from typing import Any, List, Dict, Optional, Type, Literal, TypedDict
 import traceback
 import logging
 
@@ -17,7 +16,7 @@ from orchestrator.core.exceptions import (
     ValidationError,
     TaskExecutionError,
     MemoryError,
-    OrchestratorError
+    OrchestratorError,
 )
 
 logger = logging.getLogger(__name__)
@@ -27,16 +26,13 @@ logger = logging.getLogger(__name__)
 # Structured Type Definitions
 # ============================================================================
 
-class RouterDecision(TypedDict, total=False):
-    """Structured router decision output with type constraints."""
-    route: Literal["quick", "research", "analysis", "standards"]
-    confidence: float
-    reasoning: str
-    assigned_agents: List[str]
+# RouterDecision: canonical definition is in orchestrator.core.value_objects.RouterDecision
+# For state schema, we use Dict[str, Any] to avoid coupling to a specific TypedDict shape.
 
 
 class Assignment(TypedDict):
     """Task assignment structure for agent coordination."""
+
     agent_name: str
     task_description: str
     dependencies: List[str]
@@ -51,6 +47,7 @@ class ExecutionError:
     Immutable dataclass that captures complete error context for debugging
     and recovery decisions.
     """
+
     error_type: Type[Exception]
     error_message: str
     node_name: Optional[str] = None
@@ -65,7 +62,7 @@ class ExecutionError:
         exc: Exception,
         node_name: Optional[str] = None,
         agent_name: Optional[str] = None,
-        is_recoverable: bool = False
+        is_recoverable: bool = False,
     ) -> "ExecutionError":
         """
         Create ExecutionError from caught exception.
@@ -86,7 +83,7 @@ class ExecutionError:
             agent_name=agent_name,
             stack_trace=traceback.format_exc(),
             is_recoverable=is_recoverable,
-            recovery_hint=cls._suggest_recovery(exc)
+            recovery_hint=cls._suggest_recovery(exc),
         )
 
     @staticmethod
@@ -115,6 +112,7 @@ class ExecutionError:
 # ============================================================================
 # Refactored State Schema
 # ============================================================================
+
 
 @dataclass
 class OrchestratorState:
@@ -154,10 +152,12 @@ class OrchestratorState:
     # Routing and Decision Making
     # ========================================================================
 
-    current_route: Optional[Literal["quick", "research", "analysis", "standards"]] = None
+    current_route: Optional[Literal["quick", "research", "analysis", "standards"]] = (
+        None
+    )
     """Current execution route determined by router agent."""
 
-    router_decision: Optional[RouterDecision] = None
+    router_decision: Optional[Dict[str, Any]] = None
     """Structured router decision with confidence and reasoning."""
 
     assignments: List[Assignment] = field(default_factory=list)
@@ -279,10 +279,7 @@ class OrchestratorState:
     # ========================================================================
 
     def record_node_execution(
-        self,
-        node_name: str,
-        output: str,
-        update_current: bool = True
+        self, node_name: str, output: str, update_current: bool = True
     ) -> None:
         """
         Record execution of a graph node.
@@ -301,11 +298,7 @@ class OrchestratorState:
         self.node_outputs[node_name] = output
         logger.debug(f"Recorded execution: {node_name} -> {output[:50]}...")
 
-    def record_agent_completion(
-        self,
-        agent_name: str,
-        result: str
-    ) -> None:
+    def record_agent_completion(self, agent_name: str, result: str) -> None:
         """
         Record successful agent execution.
 
@@ -327,7 +320,7 @@ class OrchestratorState:
         exc: Exception,
         node_name: Optional[str] = None,
         agent_name: Optional[str] = None,
-        is_recoverable: bool = False
+        is_recoverable: bool = False,
     ) -> None:
         """
         Record workflow error with structured context.
@@ -342,7 +335,7 @@ class OrchestratorState:
             exc=exc,
             node_name=node_name or self.current_node,
             agent_name=agent_name or self.current_agent,
-            is_recoverable=is_recoverable
+            is_recoverable=is_recoverable,
         )
         logger.error(f"Workflow error recorded: {self.error_state}")
 
@@ -375,10 +368,12 @@ class OrchestratorState:
         return {
             "iteration": f"{self.current_iteration}/{self.max_iterations}",
             "completed_agents": len(self.completed_agents),
-            "execution_path": " -> ".join(self.execution_path[-EXECUTION_PATH_DISPLAY_LIMIT:]),  # Last N nodes
+            "execution_path": " -> ".join(
+                self.execution_path[-EXECUTION_PATH_DISPLAY_LIMIT:]
+            ),  # Last N nodes
             "has_error": self.has_error(),
             "current_route": self.current_route,
-            "parallel_active": self.parallel_execution_active
+            "parallel_active": self.parallel_execution_active,
         }
 
     def __repr__(self) -> str:

@@ -1,7 +1,7 @@
 """
 Refactored memory manager as factory/coordinator for different memory providers.
 
-This is the cleaned up version that uses modular providers instead of 
+This is the cleaned up version that uses modular providers instead of
 a monolithic implementation.
 """
 
@@ -9,7 +9,7 @@ from typing import Dict, Any, Optional, List
 import logging
 
 from .providers.base import IMemoryProvider
-from .providers.rag_provider import RAGMemoryProvider
+from .providers.rag_provider import SimpleMemoryProvider
 from .providers.mem0_provider import Mem0MemoryProvider
 from .providers.hybrid_provider import HybridRAGMemoryProvider
 
@@ -27,65 +27,72 @@ logger = logging.getLogger(__name__)
 
 class MemoryManager:
     """Factory/coordinator for different memory providers."""
-    
+
     def __init__(self, config: MemoryConfig):
         """Initialize memory manager."""
         self.config = config
         self.provider: Optional[IMemoryProvider] = None
         self._initialize_provider()
-    
+
     def _initialize_provider(self) -> None:
         """Initialize the configured memory provider."""
         try:
             if self.config.provider == MemoryProvider.RAG:
-                self.provider = RAGMemoryProvider(self.config.embedder)
+                self.provider = SimpleMemoryProvider(self.config.embedder)
             elif self.config.provider == MemoryProvider.MEM0:
                 self.provider = Mem0MemoryProvider(self.config.embedder)
             elif self.config.provider == MemoryProvider.HYBRID:
                 self.provider = HybridRAGMemoryProvider(self.config.embedder)
             else:
-                raise MemoryError(f"Unsupported memory provider: {self.config.provider}")
-            
+                raise MemoryError(
+                    f"Unsupported memory provider: {self.config.provider}"
+                )
+
             # Initialize the provider with appropriate configuration
             provider_config = self._build_provider_config()
             self.provider.initialize(provider_config)
-            
-            logger.info(f"Memory manager initialized with {self.config.provider.value} provider")
+
+            logger.info(
+                f"Memory manager initialized with {self.config.provider.value} provider"
+            )
         except Exception as e:
             raise MemoryError(f"Failed to initialize memory manager: {str(e)}")
-    
+
     def _build_provider_config(self) -> Dict[str, Any]:
         """Build provider-specific configuration."""
         config = self.config.config.copy() if self.config.config else {}
-        
+
         # Add provider-specific config
         if self.config.provider == MemoryProvider.RAG:
-            config.update({
-                "short_db": self.config.short_db,
-                "long_db": self.config.long_db,
-                "rag_db_path": self.config.rag_db_path
-            })
+            if self.config.rag_db_path:
+                config["rag_db_path"] = self.config.rag_db_path
         elif self.config.provider == MemoryProvider.HYBRID:
-            # Pass through hybrid configuration directly
-            # The configuration is already structured correctly from CLI
-            pass
-        
+            # Inject hybrid-specific paths into config if set on MemoryConfig
+            if self.config.hybrid_vector_path:
+                config.setdefault("vector_store", {}).setdefault("config", {})[
+                    "path"
+                ] = self.config.hybrid_vector_path
+            if self.config.hybrid_lexical_db_path:
+                config.setdefault("lexical", {})[
+                    "db_path"
+                ] = self.config.hybrid_lexical_db_path
+
         return config
-    
+
     def store(self, content: str, metadata: Optional[Dict[str, Any]] = None) -> str:
         """Store content in memory."""
         if not self.provider:
             raise MemoryError("Memory provider not initialized")
-        
+
         return self.provider.store(content, metadata)
-    
+
     def retrieve(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
         """Retrieve content from memory."""
         if not self.provider:
             raise MemoryError("Memory provider not initialized")
-        
+
         return self.provider.retrieve(query, limit)
-    
+
     def retrieve_filtered(
         self,
         query: str,
@@ -100,10 +107,10 @@ class MemoryManager:
         """Retrieve content with optional filters."""
         if not self.provider:
             raise MemoryError("Memory provider not initialized")
-        
+
         # Try filtered retrieval if provider supports it
         try:
-            if hasattr(self.provider, 'retrieve_filtered'):
+            if hasattr(self.provider, "retrieve_filtered"):
                 filter_kwargs = {}
                 if user_id:
                     filter_kwargs["user_id"] = user_id
@@ -113,57 +120,70 @@ class MemoryManager:
                     filter_kwargs["run_id"] = run_id
                 if rerank is not None:
                     filter_kwargs["rerank"] = rerank
-                
+
                 filter_kwargs.update(kwargs)
-                return self.provider.retrieve_filtered(query, limit=limit, **filter_kwargs)
+                return self.provider.retrieve_filtered(
+                    query, limit=limit, **filter_kwargs
+                )
         except Exception as e:
-            logger.warning(f"Filtered retrieval failed, falling back to basic retrieve: {e}")
-        
+            logger.warning(
+                f"Filtered retrieval failed, falling back to basic retrieve: {e}"
+            )
+
         # Fallback to basic retrieval
         return self.retrieve(query, limit)
-    
-    def update(self, ref_id: str, content: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+
+    def update(
+        self, ref_id: str, content: str, metadata: Optional[Dict[str, Any]] = None
+    ) -> None:
         """Update existing memory entry."""
         if not self.provider:
             raise MemoryError("Memory provider not initialized")
-        
+
         return self.provider.update(ref_id, content, metadata)
-    
+
     def delete(self, ref_id: str) -> None:
         """Delete memory entry."""
         if not self.provider:
             raise MemoryError("Memory provider not initialized")
-        
+
         return self.provider.delete(ref_id)
-    
+
     def health_check(self) -> bool:
         """Check if memory manager is healthy."""
         if not self.provider:
             return False
-        
+
         return self.provider.health_check()
-    
+
     def cleanup(self) -> None:
         """Cleanup resources."""
         if self.provider:
             self.provider.cleanup()
-    
+
     def get_provider_info(self) -> Dict[str, Any]:
         """Get information about the current provider."""
         return {
             "provider": self.config.provider.value,
             "initialized": self.provider is not None and self.provider.health_check(),
-            "embedder": {
-                "provider": self.config.embedder.provider if self.config.embedder else None,
-                "model": (self.config.embedder.config or {}).get("model") if self.config.embedder else None
-            } if self.config.embedder else None
+            "embedder": (
+                {
+                    "provider": (
+                        self.config.embedder.provider if self.config.embedder else None
+                    ),
+                    "model": (
+                        (self.config.embedder.config or {}).get("model")
+                        if self.config.embedder
+                        else None
+                    ),
+                }
+                if self.config.embedder
+                else None
+            ),
         }
-    
+
     def retrieve_with_graph(
-        self,
-        query: str,
-        limit: int = 5,
-        **kwargs
+        self, query: str, limit: int = 5, **kwargs
     ) -> List[Dict[str, Any]]:
         """
         Retrieve memories using graph-enhanced search if provider supports it.
@@ -186,18 +206,14 @@ class MemoryManager:
             raise MemoryError("Memory provider not initialized")
 
         if hasattr(self.provider, "retrieve_with_graph"):
-            return self.provider.retrieve_with_graph(
-                query=query,
-                limit=limit,
-                **kwargs
-            )
+            return self.provider.retrieve_with_graph(query=query, limit=limit, **kwargs)
         else:
             # Graceful degradation for providers without graph support
             logger.debug(
                 f"Provider {type(self.provider).__name__} doesn't support "
                 "graph-enhanced retrieval. Falling back to standard retrieve()."
             )
-            return self.provider.retrieve(query, limit=limit, **kwargs)
+            return self.provider.retrieve(query, limit=limit)
 
     def create_graph_tool(self, *, default_user_id: str, default_run_id: str):
         """Create a GraphRAG lookup tool if the provider supports it."""
@@ -206,10 +222,11 @@ class MemoryManager:
         if not self.provider:
             raise MemoryError("Memory provider not initialized")
 
-        if hasattr(self.provider, 'create_graph_tool'):
+        if hasattr(self.provider, "create_graph_tool"):
             return self.provider.create_graph_tool(
-                default_user_id=default_user_id,
-                default_run_id=default_run_id
+                default_user_id=default_user_id, default_run_id=default_run_id
             )
         else:
-            raise MemoryError(f"Graph tools not supported by {self.config.provider.value} provider")
+            raise MemoryError(
+                f"Graph tools not supported by {self.config.provider.value} provider"
+            )

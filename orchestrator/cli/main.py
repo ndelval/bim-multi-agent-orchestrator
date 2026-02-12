@@ -26,9 +26,47 @@ from orchestrator.memory.providers.registry import MemoryProviderRegistry
 from orchestrator.factories.agent_factory import AgentFactory
 from orchestrator.factories.task_factory import TaskFactory
 
-# Tools are now provided by LangChain integration
-duckduckgo_tool = None
-wikipedia_tool = None
+# Web search tools - initialized lazily on first use
+_web_tools_initialized = False
+_duckduckgo_tool = None
+_wikipedia_tool = None
+
+
+def _initialize_web_tools():
+    """Initialize web search tools from langchain_community. Called once on first use."""
+    global _web_tools_initialized, _duckduckgo_tool, _wikipedia_tool
+    if _web_tools_initialized:
+        return
+    _web_tools_initialized = True
+
+    try:
+        from langchain_community.tools import DuckDuckGoSearchResults
+
+        _duckduckgo_tool = DuckDuckGoSearchResults(max_results=5)
+        logger.info("DuckDuckGo search tool initialized")
+    except ImportError:
+        logger.warning(
+            "langchain-community not installed or DuckDuckGoSearchResults unavailable; "
+            "Researcher agent will run without web search"
+        )
+    except Exception as e:
+        logger.warning(f"Failed to initialize DuckDuckGo tool: {e}")
+
+    try:
+        from langchain_community.tools import WikipediaQueryRun
+        from langchain_community.utilities import WikipediaAPIWrapper
+
+        _wikipedia_tool = WikipediaQueryRun(
+            api_wrapper=WikipediaAPIWrapper(top_k_results=2)
+        )
+        logger.info("Wikipedia tool initialized")
+    except ImportError:
+        logger.warning(
+            "wikipedia package not installed; Researcher agent will run without Wikipedia"
+        )
+    except Exception as e:
+        logger.warning(f"Failed to initialize Wikipedia tool: {e}")
+
 
 # Import Rich display event system
 from orchestrator.cli.events import (
@@ -118,125 +156,11 @@ def _show_memory_info(args: argparse.Namespace) -> int:
 def _get_agent_template(agent_name: str) -> AgentConfig:
     """Get predefined agent configuration template.
 
-    Args:
-        agent_name: Agent template name (case-insensitive)
-
-    Returns:
-        AgentConfig for the requested template
-
-    Raises:
-        ValueError: If agent_name is not a valid template
+    Delegates to orchestrator.factories.agent_templates.
     """
-    # Normalize to lowercase for case-insensitive lookup
-    agent_name_lower = agent_name.lower()
+    from orchestrator.factories.agent_templates import get_agent_template
 
-    # Handle special case: StandardsAgent → standards
-    if agent_name_lower == "standardsagent":
-        agent_name_lower = "standards"
-
-    templates = {
-        "router": AgentConfig(
-            name="Router",
-            role="Query Analyzer & Decision Router",
-            goal="Analyze user queries and route to appropriate execution path",
-            backstory=(
-                "You are an intelligent routing agent that analyzes user queries and determines "
-                "the best execution strategy. You classify queries into: 'quick' for simple factual "
-                "questions, 'analysis' for complex research requiring multi-agent collaboration, "
-                "or 'planning' for strategic planning tasks requiring Tree-of-Thought reasoning."
-            ),
-            instructions=(
-                "1. Analyze the user query complexity, intent, and required capabilities\n"
-                "2. Use GraphRAG tool to search relevant context from memory\n"
-                "3. Determine optimal routing decision:\n"
-                "   - 'quick': Simple factual questions answerable with web search\n"
-                "   - 'analysis': Complex research requiring multi-agent workflows\n"
-                "   - 'planning': Strategic planning requiring ToT reasoning\n"
-                "4. Provide confidence score (High/Medium/Low) and clear rationale\n"
-                '5. Return decision as JSON: {"decision": "quick|analysis|planning", "confidence": "High|Medium|Low", "rationale": "explanation"}'
-            ),
-            tools=["graphrag"],
-            llm="gpt-4o-mini",
-        ),
-        "researcher": AgentConfig(
-            name="Researcher",
-            role="Information Research Specialist",
-            goal="Gather comprehensive information from web sources and memory",
-            backstory=(
-                "You are a meticulous research specialist skilled at gathering information from "
-                "multiple sources. You combine web search with memory retrieval to provide "
-                "comprehensive, well-sourced answers."
-            ),
-            instructions=(
-                "1. Search GraphRAG memory for relevant historical context\n"
-                "2. Use web search (DuckDuckGo/Wikipedia) for current information\n"
-                "3. Synthesize findings into coherent response with sources\n"
-                "4. Highlight key insights and data points"
-            ),
-            tools=["graphrag", "duckduckgo", "wikipedia"],
-            llm="gpt-4o-mini",
-        ),
-        "analyst": AgentConfig(
-            name="Analyst",
-            role="Data Analysis & Insight Specialist",
-            goal="Analyze research findings and extract actionable insights",
-            backstory=(
-                "You are an analytical expert who excels at processing information and "
-                "identifying patterns, trends, and actionable insights."
-            ),
-            instructions=(
-                "1. Review research findings from previous agents\n"
-                "2. Query GraphRAG for relevant analytical context\n"
-                "3. Identify patterns, trends, and key insights\n"
-                "4. Provide structured analysis with recommendations"
-            ),
-            tools=["graphrag"],
-            llm="gpt-4o-mini",
-        ),
-        "planner": AgentConfig(
-            name="Planner",
-            role="Strategic Planning Specialist",
-            goal="Create actionable plans and strategies",
-            backstory=(
-                "You are a strategic planning expert who creates comprehensive, actionable "
-                "plans based on research and analysis."
-            ),
-            instructions=(
-                "1. Review all previous agent outputs\n"
-                "2. Query GraphRAG for relevant planning context\n"
-                "3. Create structured plan with clear steps\n"
-                "4. Include timeline, resources, and success metrics"
-            ),
-            tools=["graphrag"],
-            llm="gpt-4o-mini",
-        ),
-        "standards": AgentConfig(
-            name="StandardsAgent",
-            role="Quality Assurance Specialist",
-            goal="Ensure response quality and completeness",
-            backstory=(
-                "You are a quality assurance expert who reviews outputs for accuracy, "
-                "completeness, and adherence to best practices."
-            ),
-            instructions=(
-                "1. Review final output for accuracy and completeness\n"
-                "2. Check against GraphRAG memory for consistency\n"
-                "3. Verify all claims are properly sourced\n"
-                "4. Ensure response meets quality standards"
-            ),
-            tools=["graphrag"],
-            llm="gpt-4o-mini",
-        ),
-    }
-
-    if agent_name_lower not in templates:
-        available = ", ".join(sorted(templates.keys()))
-        raise ValueError(
-            f"Unknown agent template: '{agent_name}'. "
-            f"Available templates (case-insensitive): {available}"
-        )
-
-    return templates[agent_name_lower]
+    return get_agent_template(agent_name)
 
 
 def _build_chat_agents(memory_manager: MemoryManager, use_tools: bool = True) -> tuple:
@@ -246,12 +170,14 @@ def _build_chat_agents(memory_manager: MemoryManager, use_tools: bool = True) ->
     # Create GraphRAG tool
     graphrag_tool = create_graph_rag_tool(memory_manager)
 
-    # Web search tools (optional)
+    # Web search tools (optional, lazy-initialized)
     web_tools = []
-    if use_tools and duckduckgo_tool:
-        web_tools.append(duckduckgo_tool)
-    if use_tools and wikipedia_tool:
-        web_tools.append(wikipedia_tool)
+    if use_tools:
+        _initialize_web_tools()
+        if _duckduckgo_tool:
+            web_tools.append(_duckduckgo_tool)
+        if _wikipedia_tool:
+            web_tools.append(_wikipedia_tool)
 
     # Get agent templates
     router_config = _get_agent_template("router")
@@ -277,138 +203,33 @@ def _build_chat_agents(memory_manager: MemoryManager, use_tools: bool = True) ->
 
 
 def _parse_router_payload(text: str) -> Dict[str, Any]:
+    """Extract decision payload from router output.
+
+    Delegates to orchestrator.utils.output_extraction.
     """
-    Extract decision payload from router output.
-    Supports JSON objects and markdown code blocks.
-    """
-    if not text:
-        return {}
+    from orchestrator.utils.output_extraction import parse_router_payload
 
-    # Try direct JSON parsing
-    try:
-        data = json.loads(text.strip())
-        if isinstance(data, dict):
-            return data
-    except (json.JSONDecodeError, ValueError):
-        pass
-
-    # Try extracting from markdown code block
-    import re
-
-    json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-    if json_match:
-        try:
-            data = json.loads(json_match.group(1))
-            if isinstance(data, dict):
-                return data
-        except (json.JSONDecodeError, ValueError):
-            pass
-
-    # Try finding JSON object in text
-    json_obj_match = re.search(r'\{[^{}]*"decision"[^{}]*\}', text)
-    if json_obj_match:
-        try:
-            data = json.loads(json_obj_match.group(0))
-            if isinstance(data, dict):
-                return data
-        except (json.JSONDecodeError, ValueError):
-            pass
-
-    # Fallback: extract decision keyword
-    decision_match = re.search(r'decision["\s:]+(\w+)', text, re.IGNORECASE)
-    if decision_match:
-        return {"decision": decision_match.group(1)}
-
-    return {}
+    return parse_router_payload(text)
 
 
 def _extract_text(output: Any) -> str:
-    """Extract text content from various output formats."""
-    if output is None:
-        return ""
+    """Extract text content from various output formats.
 
-    # PRIORITY 1 FIX: Handle OrchestratorState with final_output field
-    if hasattr(output, "final_output") and output.final_output:
-        return str(output.final_output)
+    Delegates to orchestrator.utils.output_extraction.
+    """
+    from orchestrator.utils.output_extraction import extract_text
 
-    # Handle string output
-    if isinstance(output, str):
-        return output
-
-    # Handle dict with final_output
-    if isinstance(output, dict):
-        if "final_output" in output:
-            return str(output["final_output"])
-        # Try common text fields
-        for key in ["output", "text", "content", "response", "result"]:
-            if key in output:
-                return str(output[key])
-        # Fallback to messages
-        if "messages" in output:
-            messages = output["messages"]
-            if messages:
-                last_msg = messages[-1]
-                if isinstance(last_msg, dict):
-                    return last_msg.get("content", str(output))
-                elif hasattr(last_msg, "content"):
-                    return str(last_msg.content)
-        return str(output)
-
-    # Handle TaskOutput objects
-    if hasattr(output, "raw"):
-        return str(output.raw)
-    if hasattr(output, "content"):
-        return str(output.content)
-
-    return str(output)
+    return extract_text(output)
 
 
 def _extract_decision(output: Any) -> Optional[str]:
-    """Extract routing decision from various output formats including StateGraph state."""
-    if output is None:
-        return None
+    """Extract routing decision from various output formats.
 
-    # PHASE 1 FIX: Check StateGraph state object attributes first
-    if hasattr(output, "current_route"):
-        route = getattr(output, "current_route")
-        return str(route).strip() if route else None
+    Delegates to orchestrator.utils.output_extraction.
+    """
+    from orchestrator.utils.output_extraction import extract_decision
 
-    # Check for router_decision attribute (alternative state field)
-    if hasattr(output, "router_decision"):
-        route = getattr(output, "router_decision")
-        return str(route).strip() if route else None
-
-    # PHASE 1 FIX: Check dict state (StateGraph can return dict or object)
-    if isinstance(output, dict):
-        # StateGraph state as dict
-        if "current_route" in output:
-            return str(output["current_route"]).strip()
-        if "router_decision" in output:
-            return str(output["router_decision"]).strip()
-        # Legacy router payload
-        if "decision" in output:
-            return str(output["decision"]).strip()
-
-    # EXISTING CODE: Check other formats (json_dict, pydantic, raw JSON)
-    json_dict = getattr(output, "json_dict", None)
-    if isinstance(json_dict, dict) and json_dict.get("decision"):
-        return str(json_dict["decision"]).strip()
-
-    pydantic_obj = getattr(output, "pydantic", None)
-    if pydantic_obj is not None and hasattr(pydantic_obj, "decision"):
-        value = getattr(pydantic_obj, "decision")
-        return str(value).strip() if value else None
-
-    raw = getattr(output, "raw", None)
-    if isinstance(raw, str) and "decision" in raw.lower():
-        try:
-            data = json.loads(raw)
-            if isinstance(data, dict) and data.get("decision"):
-                return str(data["decision"]).strip()
-        except Exception:
-            pass
-
-    return None
+    return extract_decision(output)
 
 
 # Graph tool attachment now handled by CLI adapter
@@ -417,6 +238,7 @@ def _extract_decision(output: Any) -> Optional[str]:
 def run_chat(args: argparse.Namespace) -> int:
     """Run interactive chat with the orchestrator."""
     from .chat_orchestrator import ChatOrchestrator
+
     orchestrator = ChatOrchestrator(args)
     return orchestrator.run()
 

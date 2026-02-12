@@ -16,6 +16,7 @@ from ..core.exceptions import AgentCreationError, TemplateError
 # Import MCP components (optional - graceful degradation if not available)
 try:
     from ..mcp import MCPClientManager, MCPToolAdapter, MCPServerConfig
+
     MCP_AVAILABLE = True
 except ImportError:
     MCPClientManager = None
@@ -29,6 +30,7 @@ from ..integrations.langchain_integration import LangChainAgent as Agent
 # Import LangChain tools - optional
 try:
     from ..integrations.langchain_integration import DuckDuckGoSearchRun
+
     DUCKDUCKGO_AVAILABLE = True
 except ImportError:
     DuckDuckGoSearchRun = None
@@ -60,8 +62,8 @@ class BaseAgentTemplate(ABC):
         """
         try:
             # Extract parameters
-            llm = kwargs.get('llm', config.llm or 'gpt-4o-mini')
-            tools = kwargs.get('tools') or self._resolve_tools(config.tools)
+            llm = kwargs.get("llm", config.llm or "gpt-4o-mini")
+            tools = kwargs.get("tools") or self._resolve_tools(config.tools)
 
             # Create LangChain agent directly
             agent = Agent(
@@ -71,7 +73,7 @@ class BaseAgentTemplate(ABC):
                 backstory=config.backstory,
                 instructions=config.instructions or "",
                 llm=llm,
-                tools=tools
+                tools=tools,
             )
             logger.info(f"Created LangChain agent: {config.name}")
             return agent
@@ -93,16 +95,28 @@ class BaseAgentTemplate(ABC):
         """
         tools = []
         for item in tool_names:
+            # Pass through items that are already LangChain BaseTool instances
+            try:
+                from langchain.tools import BaseTool as _BaseTool
+
+                if isinstance(item, _BaseTool):
+                    tools.append(item)
+                    logger.debug(f"Using existing BaseTool: {item.name}")
+                    continue
+            except ImportError:
+                pass
+
             # Handle callable tools (e.g., dynamic tools from MCP)
             if callable(item) and not isinstance(item, str):
                 try:
                     from langchain.tools import Tool as LangChainTool
-                    tool_name = getattr(item, '__name__', 'dynamic_tool')
-                    tool_desc = getattr(item, '__doc__', 'Dynamic tool')
+
+                    tool_name = getattr(item, "__name__", "dynamic_tool")
+                    tool_desc = getattr(item, "__doc__", "Dynamic tool")
                     wrapped = LangChainTool(
                         name=tool_name,
                         description=tool_desc or f"Tool: {tool_name}",
-                        func=item
+                        func=item,
                     )
                     tools.append(wrapped)
                     logger.debug(f"Wrapped dynamic tool: {wrapped.name}")
@@ -161,7 +175,7 @@ class OrchestratorAgentTemplate(BaseAgentTemplate):
                 "Analyze objectives, propose a minimal viable plan, assign parallelizable tasks, "
                 "monitor results, and request revisions when quality risks are detected."
             ),
-            tools=[]
+            tools=[],
         )
 
 
@@ -183,7 +197,7 @@ class ResearcherAgentTemplate(BaseAgentTemplate):
             goal="Gather up‑to‑date, sourced information",
             backstory="Expert in web research and summarization.",
             instructions="Use web search to collect reliable, relevant information with sources.",
-            tools=["duckduckgo"]
+            tools=["duckduckgo"],
         )
 
 
@@ -208,7 +222,7 @@ class PlannerAgentTemplate(BaseAgentTemplate):
                 "Propose a concise plan with steps, owners, and acceptance criteria. "
                 "Prefer parallelizable steps where safe."
             ),
-            tools=[]
+            tools=[],
         )
 
 
@@ -232,7 +246,7 @@ class ImplementerAgentTemplate(BaseAgentTemplate):
             instructions=(
                 "Implement the simplest viable approach that satisfies the plan's acceptance criteria."
             ),
-            tools=[]
+            tools=[],
         )
 
 
@@ -254,7 +268,7 @@ class TesterAgentTemplate(BaseAgentTemplate):
             goal="Validate functionality and quality",
             backstory="You design lean checks to validate core functionality.",
             instructions="Test critical paths; report defects with clear reproduction steps.",
-            tools=[]
+            tools=[],
         )
 
 
@@ -278,7 +292,7 @@ class WriterAgentTemplate(BaseAgentTemplate):
             instructions=(
                 "Create a concise report: objective, approach, key findings, limitations, next steps."
             ),
-            tools=[]
+            tools=[],
         )
 
 
@@ -321,39 +335,36 @@ class AgentFactory:
             PlannerAgentTemplate(),
             ImplementerAgentTemplate(),
             TesterAgentTemplate(),
-            WriterAgentTemplate()
+            WriterAgentTemplate(),
         ]
 
         for template in default_templates:
             self.register_template(template)
-    
+
     def register_template(self, template: BaseAgentTemplate) -> None:
         """Register an agent template."""
         if not isinstance(template, BaseAgentTemplate):
             raise TemplateError(f"Template must inherit from BaseAgentTemplate")
-        
+
         self._templates[template.agent_type] = template
         logger.info(f"Registered agent template: {template.agent_type}")
-    
+
     def unregister_template(self, agent_type: str) -> None:
         """Unregister an agent template."""
         if agent_type in self._templates:
             del self._templates[agent_type]
             logger.info(f"Unregistered agent template: {agent_type}")
-    
+
     def get_template(self, agent_type: str) -> Optional[BaseAgentTemplate]:
         """Get an agent template by type."""
         return self._templates.get(agent_type)
-    
+
     def list_templates(self) -> List[str]:
         """List all registered agent templates."""
         return list(self._templates.keys())
-    
+
     def create_agent(
-        self,
-        config: AgentConfig,
-        agent_type: Optional[str] = None,
-        **kwargs
+        self, config: AgentConfig, agent_type: Optional[str] = None, **kwargs
     ) -> Agent:
         """Create an agent from configuration using LangChain.
 
@@ -386,7 +397,9 @@ class AgentFactory:
         if config.mcp_servers and self._mcp_tool_adapter:
             try:
                 mcp_tools = self._create_mcp_tools(config.mcp_servers)
-                logger.info(f"Created {len(mcp_tools)} MCP tool(s) for agent '{config.name}'")
+                logger.info(
+                    f"Created {len(mcp_tools)} MCP tool(s) for agent '{config.name}'"
+                )
             except Exception as e:
                 logger.warning(f"Failed to create MCP tools for '{config.name}': {e}")
 
@@ -394,20 +407,29 @@ class AgentFactory:
         if mcp_tools:
             if isinstance(config.tools, list):
                 from copy import deepcopy
+
                 config = deepcopy(config)
                 config.tools = list(config.tools) + mcp_tools
             else:
-                logger.warning(f"Agent '{config.name}' has non-list tools, skipping MCP tool merge")
+                logger.warning(
+                    f"Agent '{config.name}' has non-list tools, skipping MCP tool merge"
+                )
 
         # Create agent using LangChain
         try:
             agent = template.create_agent(config, **kwargs)
-            logger.info(f"Created agent '{config.name}' of type '{agent_type}' using LangChain")
+            logger.info(
+                f"Created agent '{config.name}' of type '{agent_type}' using LangChain"
+            )
             return agent
         except Exception as e:
-            raise AgentCreationError(f"Failed to create agent '{config.name}': {str(e)}")
-    
-    def create_agents_from_configs(self, configs: List[AgentConfig], **kwargs) -> List[Agent]:
+            raise AgentCreationError(
+                f"Failed to create agent '{config.name}': {str(e)}"
+            )
+
+    def create_agents_from_configs(
+        self, configs: List[AgentConfig], **kwargs
+    ) -> List[Agent]:
         """Create multiple agents from configurations."""
         agents = []
         for config in configs:
@@ -415,7 +437,7 @@ class AgentFactory:
                 agent = self.create_agent(config, **kwargs)
                 agents.append(agent)
         return agents
-    
+
     def _create_mcp_tools(self, mcp_servers: List[Any]) -> List[Callable]:
         """
         Create tools from MCP server configurations.
@@ -521,11 +543,7 @@ class AgentFactory:
 
         return all_tools
 
-    async def create_agent_async(
-        self,
-        config: AgentConfig,
-        **kwargs
-    ) -> Agent:
+    async def create_agent_async(self, config: AgentConfig, **kwargs) -> Agent:
         """
         Create an agent asynchronously with MCP support.
 
@@ -546,7 +564,9 @@ class AgentFactory:
         if config.mcp_servers and self._mcp_tool_adapter:
             try:
                 mcp_tools = await self._create_mcp_tools_async(config.mcp_servers)
-                logger.info(f"Created {len(mcp_tools)} MCP tool(s) for agent '{config.name}'")
+                logger.info(
+                    f"Created {len(mcp_tools)} MCP tool(s) for agent '{config.name}'"
+                )
 
                 # Merge MCP tools with existing tools
                 if mcp_tools:
@@ -588,51 +608,57 @@ class AgentFactory:
             "planner": ["planner", "planning", "strategy", "design"],
             "implementer": ["implement", "builder", "developer", "coder"],
             "tester": ["test", "qa", "quality", "validation"],
-            "writer": ["writer", "documentation", "report", "summary"]
+            "writer": ["writer", "documentation", "report", "summary"],
         }
 
         # Check all fields for pattern matches
         for agent_type, patterns in type_patterns.items():
             for pattern in patterns:
-                if (pattern in name_lower or
-                    pattern in role_lower or
-                    pattern in goal_lower or
-                    pattern in backstory_lower):
+                if (
+                    pattern in name_lower
+                    or pattern in role_lower
+                    or pattern in goal_lower
+                    or pattern in backstory_lower
+                ):
                     return agent_type
 
         # Default to generic type if no match
         return "implementer"
-    
+
     def get_default_config(self, agent_type: str) -> AgentConfig:
         """Get default configuration for an agent type."""
         template = self.get_template(agent_type)
         if template is None:
             raise TemplateError(f"No template found for agent type: {agent_type}")
-        
+
         return template.get_default_config()
-    
-    def create_default_agent(self, agent_type: str, name: Optional[str] = None, **kwargs) -> Agent:
+
+    def create_default_agent(
+        self, agent_type: str, name: Optional[str] = None, **kwargs
+    ) -> Agent:
         """Create an agent with default configuration."""
         config = self.get_default_config(agent_type)
         if name:
             config.name = name
-        
+
         return self.create_agent(config, agent_type, **kwargs)
-    
-    def validate_config(self, config: AgentConfig, agent_type: Optional[str] = None) -> bool:
+
+    def validate_config(
+        self, config: AgentConfig, agent_type: Optional[str] = None
+    ) -> bool:
         """Validate agent configuration."""
         try:
             if agent_type is None:
                 agent_type = self._infer_agent_type(config)
-            
+
             template = self.get_template(agent_type)
             if template is None:
                 raise TemplateError(f"No template found for agent type: {agent_type}")
-            
+
             # Basic validation
             if not config.name or not config.role or not config.goal:
                 return False
-            
+
             return True
         except Exception:
             return False

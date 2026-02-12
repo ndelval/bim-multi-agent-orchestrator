@@ -14,7 +14,6 @@ from orchestrator.core.executor import OrchestratorExecutor
 from orchestrator.core.config import OrchestratorConfig, AgentConfig, TaskConfig
 from orchestrator.core.exceptions import WorkflowError, AgentCreationError
 from orchestrator.memory.memory_manager import MemoryManager
-from orchestrator.workflow.workflow_engine import WorkflowEngine
 from orchestrator.integrations.langchain_integration import (
     OrchestratorState,
     HumanMessage,
@@ -71,38 +70,31 @@ def mock_memory_manager():
 
 
 @pytest.fixture
-def mock_workflow_engine():
-    """Create mock workflow engine."""
-    return Mock(spec=WorkflowEngine)
-
-
-@pytest.fixture
-def executor(basic_config, mock_compiled_graph, mock_memory_manager, mock_workflow_engine):
+def executor(basic_config, mock_compiled_graph, mock_memory_manager):
     """Create OrchestratorExecutor instance."""
     return OrchestratorExecutor(
         config=basic_config,
         compiled_graph=mock_compiled_graph,
         memory_manager=mock_memory_manager,
-        workflow_engine=mock_workflow_engine,
     )
 
 
 class TestOrchestratorExecutorInit:
     """Test OrchestratorExecutor initialization."""
 
-    def test_init_with_all_parameters(self, basic_config, mock_compiled_graph, mock_memory_manager, mock_workflow_engine):
+    def test_init_with_all_parameters(
+        self, basic_config, mock_compiled_graph, mock_memory_manager
+    ):
         """Test initialization with all parameters."""
         executor = OrchestratorExecutor(
             config=basic_config,
             compiled_graph=mock_compiled_graph,
             memory_manager=mock_memory_manager,
-            workflow_engine=mock_workflow_engine,
         )
 
         assert executor.config == basic_config
         assert executor.compiled_graph == mock_compiled_graph
         assert executor.memory_manager == mock_memory_manager
-        assert executor.workflow_engine == mock_workflow_engine
 
     def test_init_without_optional_parameters(self, basic_config, mock_compiled_graph):
         """Test initialization without optional parameters."""
@@ -114,14 +106,15 @@ class TestOrchestratorExecutorInit:
         assert executor.config == basic_config
         assert executor.compiled_graph == mock_compiled_graph
         assert executor.memory_manager is None
-        assert executor.workflow_engine is None
 
 
 class TestRunLanggraphWorkflow:
     """Test LangGraph workflow execution."""
 
     @pytest.mark.asyncio
-    async def test_run_workflow_with_recall_content(self, executor, mock_compiled_graph):
+    async def test_run_workflow_with_recall_content(
+        self, executor, mock_compiled_graph
+    ):
         """Test workflow execution with recall content."""
         recall_content = "Memory context\nAnother line"
 
@@ -144,7 +137,9 @@ class TestRunLanggraphWorkflow:
         assert call_args.recall_items == ["Memory context", "Another line"]
 
     @pytest.mark.asyncio
-    async def test_run_workflow_without_recall_content(self, executor, mock_compiled_graph):
+    async def test_run_workflow_without_recall_content(
+        self, executor, mock_compiled_graph
+    ):
         """Test workflow execution without recall content."""
         mock_result = Mock()
         mock_result.final_output = "Success"
@@ -160,7 +155,9 @@ class TestRunLanggraphWorkflow:
         assert call_args.recall_items == []
 
     @pytest.mark.asyncio
-    async def test_run_workflow_raises_workflow_error_on_failure(self, executor, mock_compiled_graph):
+    async def test_run_workflow_raises_workflow_error_on_failure(
+        self, executor, mock_compiled_graph
+    ):
         """Test workflow raises WorkflowError on execution failure."""
         mock_compiled_graph.invoke.side_effect = Exception("Graph execution failed")
 
@@ -206,7 +203,9 @@ class TestExtractFinalOutput:
 class TestBuildRecallContent:
     """Test memory recall content building."""
 
-    def test_build_recall_without_memory_manager(self, basic_config, mock_compiled_graph):
+    def test_build_recall_without_memory_manager(
+        self, basic_config, mock_compiled_graph
+    ):
         """Test recall building returns None without memory manager."""
         executor = OrchestratorExecutor(
             config=basic_config,
@@ -229,7 +228,9 @@ class TestBuildRecallContent:
         result = executor.build_recall_content()
         assert result is None
 
-    def test_build_recall_with_valid_config(self, executor, basic_config, mock_memory_manager):
+    def test_build_recall_with_valid_config(
+        self, executor, basic_config, mock_memory_manager
+    ):
         """Test successful recall building with valid configuration."""
         executor.config.custom_config = {
             "recall": {
@@ -264,7 +265,9 @@ class TestBuildRecallContent:
             rerank=True,
         )
 
-    def test_build_recall_fallback_to_simple_retrieval(self, executor, basic_config, mock_memory_manager):
+    def test_build_recall_fallback_to_simple_retrieval(
+        self, executor, basic_config, mock_memory_manager
+    ):
         """Test fallback to simple retrieval when filtered retrieval fails."""
         executor.config.custom_config = {"recall": {"query": "test", "limit": 2}}
 
@@ -278,7 +281,9 @@ class TestBuildRecallContent:
         assert "Fallback memory" in result
         mock_memory_manager.retrieve.assert_called_once_with("test", limit=2)
 
-    def test_build_recall_with_empty_results(self, executor, basic_config, mock_memory_manager):
+    def test_build_recall_with_empty_results(
+        self, executor, basic_config, mock_memory_manager
+    ):
         """Test recall building with empty results."""
         executor.config.custom_config = {"recall": {"query": "test"}}
         mock_memory_manager.retrieve_filtered.return_value = []
@@ -286,7 +291,9 @@ class TestBuildRecallContent:
         result = executor.build_recall_content()
         assert result is None
 
-    def test_build_recall_uses_top_k_as_fallback(self, executor, basic_config, mock_memory_manager):
+    def test_build_recall_uses_top_k_as_fallback(
+        self, executor, basic_config, mock_memory_manager
+    ):
         """Test that top_k is used as fallback for limit."""
         executor.config.custom_config = {"recall": {"query": "test", "top_k": 7}}
         mock_memory_manager.retrieve_filtered.return_value = [{"content": "test"}]
@@ -369,13 +376,15 @@ class TestPlanFromPrompt:
             recall_snippets=["Previous finding 1", "Previous finding 2"],
         )
 
-        assert "Contexto recuperado:" in tasks[0].description
+        assert "Recalled context:" in tasks[0].description
         assert "Previous finding 1" in tasks[0].description
         assert "Previous finding 2" in tasks[0].description
 
     def test_plan_raises_error_for_empty_sequence(self, executor, agent_configs):
         """Test that planning raises error for empty agent sequence."""
-        with pytest.raises(ValueError, match="agent_sequence must contain at least one agent"):
+        with pytest.raises(
+            ValueError, match="agent_sequence must contain at least one agent"
+        ):
             executor.plan_from_prompt(
                 prompt="Test",
                 agent_sequence=[],
@@ -397,8 +406,14 @@ class TestStaticHelperMethods:
 
     def test_generate_task_name(self):
         """Test task name generation."""
-        assert OrchestratorExecutor._generate_task_name("Researcher", 0) == "researcher_task_1"
-        assert OrchestratorExecutor._generate_task_name("Data Analyst", 2) == "data_analyst_task_3"
+        assert (
+            OrchestratorExecutor._generate_task_name("Researcher", 0)
+            == "researcher_task_1"
+        )
+        assert (
+            OrchestratorExecutor._generate_task_name("Data Analyst", 2)
+            == "data_analyst_task_3"
+        )
 
     def test_compose_task_description_basic(self, agent_configs):
         """Test basic task description composition."""
@@ -422,10 +437,10 @@ class TestStaticHelperMethods:
             assignment_tags=["urgent", "priority"],
         )
 
-        assert "Contexto recuperado:" in description
+        assert "Recalled context:" in description
         assert "Context 1" in description
-        assert "Tipo de tarea sugerido: analysis" in description
-        assert "Objetivo específico: Deep dive analysis" in description
+        assert "Suggested task type: analysis" in description
+        assert "Specific objective: Deep dive analysis" in description
         assert "urgent, priority" in description
 
     def test_compose_expected_output_basic(self, agent_configs):

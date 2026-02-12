@@ -122,24 +122,8 @@ class RouteClassifier:
         prompt_lower = prompt.lower()
 
         # Check each route type in priority order
-        if self._match_keywords(prompt_lower, self.keywords.quick):
-            logger.info("[RouteClassifier] Matched 'quick' keywords")
-            return RouteDecision(
-                route="quick",
-                confidence=0.8,
-                reason="Matched quick response keywords",
-                source="keyword",
-            )
-
-        if self._match_keywords(prompt_lower, self.keywords.research):
-            logger.info("[RouteClassifier] Matched 'research' keywords")
-            return RouteDecision(
-                route="research",
-                confidence=0.8,
-                reason="Matched research keywords",
-                source="keyword",
-            )
-
+        # Priority: planning > analysis > research > standards > quick
+        # This prevents "quickly plan my project" from matching quick instead of planning
         if self._match_keywords(prompt_lower, self.keywords.planning):
             logger.info("[RouteClassifier] Matched 'planning' keywords")
             return RouteDecision(
@@ -158,12 +142,30 @@ class RouteClassifier:
                 source="keyword",
             )
 
+        if self._match_keywords(prompt_lower, self.keywords.research):
+            logger.info("[RouteClassifier] Matched 'research' keywords")
+            return RouteDecision(
+                route="research",
+                confidence=0.8,
+                reason="Matched research keywords",
+                source="keyword",
+            )
+
         if self._match_keywords(prompt_lower, self.keywords.standards):
             logger.info("[RouteClassifier] Matched 'standards' keywords")
             return RouteDecision(
                 route="standards",
                 confidence=0.8,
                 reason="Matched standards keywords",
+                source="keyword",
+            )
+
+        if self._match_keywords(prompt_lower, self.keywords.quick):
+            logger.info("[RouteClassifier] Matched 'quick' keywords")
+            return RouteDecision(
+                route="quick",
+                confidence=0.8,
+                reason="Matched quick response keywords",
                 source="keyword",
             )
 
@@ -201,7 +203,7 @@ class RouteClassifier:
             else:
                 # Single-word keyword, use word boundary
                 # Check if keyword appears as a complete word
-                if re.search(r'\b' + re.escape(kw) + r'\b', text):
+                if re.search(r"\b" + re.escape(kw) + r"\b", text):
                     return True
         return False
 

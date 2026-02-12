@@ -595,7 +595,7 @@ class WorkflowEngine:
                     "id": task_name,
                     "label": task_name,
                     "status": execution.status.value,
-                    "agent": execution.config.agent_name,
+                    "agent": execution.config.agent,
                     "async": execution.config.async_execution,
                     "start": execution.config.is_start,
                 }

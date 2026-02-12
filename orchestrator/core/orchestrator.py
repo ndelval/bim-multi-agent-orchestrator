@@ -23,16 +23,15 @@ from .embedding_utils import get_embedding_dimensions, build_embedder_config
 
 from .config import OrchestratorConfig, AgentConfig, TaskConfig
 from .exceptions import (
-    OrchestratorError, 
-    ConfigurationError, 
-    AgentCreationError, 
+    OrchestratorError,
+    ConfigurationError,
+    AgentCreationError,
     TaskExecutionError,
-    WorkflowError
+    WorkflowError,
 )
 from ..factories.agent_factory import AgentFactory
 from ..factories.task_factory import TaskFactory
 from ..memory.memory_manager import MemoryManager
-from ..workflow.workflow_engine import WorkflowEngine, WorkflowMetrics
 
 
 logger = logging.getLogger(__name__)
@@ -42,58 +41,53 @@ logger.info("Orchestrator initialized with LangGraph backend")
 class Orchestrator:
     """
     Main orchestrator class for managing multi-agent workflows.
-    
+
     This class integrates all components (agents, tasks, memory, workflow)
     and provides a high-level API for building and executing orchestrator systems.
     """
-    
+
     def __init__(self, config: Optional[OrchestratorConfig] = None):
         """
         Initialize the orchestrator.
-        
+
         Args:
             config: Configuration object. If None, creates default configuration.
         """
         self.config = config or OrchestratorConfig()
-        
+
         # Initialize components
         self.agent_factory = AgentFactory()
         self.task_factory = TaskFactory()
         self.memory_manager: Optional[MemoryManager] = None
-        self.workflow_engine: Optional[WorkflowEngine] = None
-        
+
         # LangGraph components (new system)
         self.graph_factory: Optional[GraphFactory] = None
         self.compiled_graph: Optional[Any] = None  # Compiled StateGraph
-        
+
         # State
         self.agents: Dict[str, Agent] = {}
         self.tasks: List[Any] = []
         self.is_initialized = False
-        
+
         # Callbacks
         self.on_workflow_start: Optional[Callable[[], None]] = None
-        self.on_workflow_complete: Optional[Callable[[WorkflowMetrics], None]] = None
         self.on_task_start: Optional[Callable[[str, Any], None]] = None
         self.on_task_complete: Optional[Callable[[str, Any], None]] = None
         self.on_error: Optional[Callable[[Exception], None]] = None
-        
+
         # Initialize if config has agents and tasks
         if self.config.agents and self.config.tasks:
             self.initialize()
-    
+
     def initialize(self) -> None:
         """Initialize all components."""
         try:
             logger.info(f"Initializing orchestrator: {self.config.name}")
-            
+
             # Initialize memory manager
             if self.config.memory is not None and not self.memory_manager:
                 self.memory_manager = MemoryManager(self.config.memory)
                 logger.info("Memory manager initialized")
-
-            # Initialize workflow engine
-            self._initialize_workflow_engine()
 
             # Create agents
             self._create_agents()
@@ -103,11 +97,11 @@ class Orchestrator:
 
             self.is_initialized = True
             logger.info("Orchestrator initialized successfully")
-            
+
         except Exception as e:
             logger.error(f"Failed to initialize orchestrator: {str(e)}")
             raise OrchestratorError(f"Initialization failed: {str(e)}")
-    
+
     def _create_agents(self) -> None:
         """Create agents from configuration."""
         try:
@@ -119,12 +113,11 @@ class Orchestrator:
                 agent = self.agent_factory.create_agent(agent_config)
                 self.agents[agent_config.name] = agent
                 logger.debug(f"Created agent: {agent_config.name}")
-            
+
             logger.info(f"Created {len(self.agents)} agents")
         except Exception as e:
             raise AgentCreationError(f"Failed to create agents: {str(e)}")
-    
-    
+
     def _initialize_graph_factory(self) -> None:
         """Initialize graph factory for StateGraph creation."""
         self.graph_factory = GraphFactory(self.agent_factory)
@@ -141,10 +134,9 @@ class Orchestrator:
         if self.memory_manager:
             try:
                 graph_tool = self.create_graph_tool(
-                    user_id=self.config.user_id,
-                    run_id=self.config.run_id
+                    user_id=self.config.user_id, run_id=self.config.run_id
                 )
-                dynamic_tools['graph_rag_lookup'] = graph_tool
+                dynamic_tools["graph_rag_lookup"] = graph_tool
                 logger.info("Created GraphRAG tool for agent attachment")
             except Exception as e:
                 logger.warning(f"Failed to create GraphRAG tool: {e}")
@@ -152,8 +144,7 @@ class Orchestrator:
         return dynamic_tools
 
     def _enrich_agent_configs_with_tools(
-        self,
-        dynamic_tools: Dict[str, Any]
+        self, dynamic_tools: Dict[str, Any]
     ) -> List[AgentConfig]:
         """
         Enrich agent configurations with dynamic tool names.
@@ -176,11 +167,13 @@ class Orchestrator:
             enriched = deepcopy(agent_config)
 
             # Add GraphRAG tool if agent instructions reference it
-            if 'graph_rag_lookup' in dynamic_tools:
-                if any(keyword in agent_config.instructions.lower()
-                       for keyword in ['graph_rag_lookup', 'graphrag']):
-                    if 'graph_rag_lookup' not in enriched.tools:
-                        enriched.tools.append('graph_rag_lookup')
+            if "graph_rag_lookup" in dynamic_tools:
+                if any(
+                    keyword in agent_config.instructions.lower()
+                    for keyword in ["graph_rag_lookup", "graphrag"]
+                ):
+                    if "graph_rag_lookup" not in enriched.tools:
+                        enriched.tools.append("graph_rag_lookup")
                         logger.debug(f"Added GraphRAG tool to agent {enriched.name}")
 
             enriched_agent_configs.append(enriched)
@@ -196,7 +189,9 @@ class Orchestrator:
         """
         if self.config.tasks:
             # Use workflow graph if tasks are defined
-            self.compiled_graph = self.graph_factory.create_workflow_graph(self.config).compile()
+            self.compiled_graph = self.graph_factory.create_workflow_graph(
+                self.config
+            ).compile()
             logger.info("Created workflow StateGraph from tasks")
         else:
             # Use chat graph for agent-only configurations
@@ -204,15 +199,17 @@ class Orchestrator:
 
             # Find router agent if available
             for agent_config in enriched_agent_configs:
-                if "orchestrator" in agent_config.name.lower() or "router" in agent_config.role.lower():
+                if (
+                    "orchestrator" in agent_config.name.lower()
+                    or "router" in agent_config.role.lower()
+                ):
                     router_agent = agent_config
                     break
 
             # Create chat graph
             other_agents = [a for a in enriched_agent_configs if a != router_agent]
             self.compiled_graph = self.graph_factory.create_chat_graph(
-                other_agents,
-                router_agent
+                other_agents, router_agent
             ).compile()
             logger.info(f"Created chat StateGraph with {len(other_agents)} agents")
 
@@ -228,7 +225,9 @@ class Orchestrator:
                 self.graph_factory.register_dynamic_tools(dynamic_tools)
 
             # Enrich agent configs with tool names
-            enriched_agent_configs = self._enrich_agent_configs_with_tools(dynamic_tools)
+            enriched_agent_configs = self._enrich_agent_configs_with_tools(
+                dynamic_tools
+            )
             self.config.agents = enriched_agent_configs
 
             # Create StateGraph
@@ -238,11 +237,11 @@ class Orchestrator:
 
         except Exception as e:
             raise OrchestratorError(f"Failed to create LangGraph system: {str(e)}")
-    
+
     async def run(self) -> Any:
         """
         Run the orchestrator workflow.
-        
+
         Returns:
             The result of the workflow execution.
         """
@@ -252,51 +251,55 @@ class Orchestrator:
         # Check that LangGraph execution system is available
         if not self.compiled_graph:
             raise OrchestratorError("LangGraph system not created")
-        
+
         try:
             logger.info(f"Starting orchestrator workflow: {self.config.name}")
-            
+
             # Call start callback
             if self.on_workflow_start:
                 self.on_workflow_start()
-            
+
             # Optional global recall context from memory
             recall_content = None
             try:
                 recall_content = self._build_recall_content()
             except Exception as e:
                 # Log recall build failures but don't fail the entire run
-                logger.warning(f"Recall content build failed, continuing without recall: {e}")
+                logger.warning(
+                    f"Recall content build failed, continuing without recall: {e}"
+                )
                 recall_content = None
 
             # Execute LangGraph workflow
             result = await self._run_langgraph_workflow(recall_content)
-            
+
             logger.info("Orchestrator workflow completed successfully")
             return result
-            
+
         except Exception as e:
             logger.error(f"Workflow execution failed: {str(e)}")
             if self.on_error:
                 self.on_error(e)
             raise WorkflowError(f"Workflow execution failed: {str(e)}")
-    
+
     def run_sync(self) -> Any:
         """
         Run the orchestrator workflow synchronously.
-        
+
         Returns:
             The result of the workflow execution.
         """
         return asyncio.run(self.run())
-    
-    async def _run_langgraph_workflow(self, recall_content: Optional[str] = None) -> Any:
+
+    async def _run_langgraph_workflow(
+        self, recall_content: Optional[str] = None
+    ) -> Any:
         """
         Run the LangGraph StateGraph workflow.
-        
+
         Args:
             recall_content: Optional memory recall content to include in execution
-            
+
         Returns:
             The result of the StateGraph execution
         """
@@ -311,25 +314,25 @@ class Orchestrator:
                 input_prompt=user_prompt,
                 memory_context=recall_content,
                 max_iterations=self.config.max_iterations,
-                recall_items=recall_content.split('\n') if recall_content else []
+                recall_items=recall_content.split("\n") if recall_content else [],
             )
-            
+
             # Execute the StateGraph
             logger.info("Executing LangGraph StateGraph workflow")
             result = await asyncio.to_thread(self.compiled_graph.invoke, initial_state)
-            
+
             # Extract final output from state
-            if hasattr(result, 'final_output') and result.final_output:
+            if hasattr(result, "final_output") and result.final_output:
                 return result.final_output
-            elif hasattr(result, 'messages') and result.messages:
+            elif hasattr(result, "messages") and result.messages:
                 # Return the last AI message
                 for message in reversed(result.messages):
-                    if hasattr(message, 'content') and 'AI' in str(type(message)):
+                    if hasattr(message, "content") and "AI" in str(type(message)):
                         return message.content
-            
+
             # Fallback - return the entire state
             return str(result)
-            
+
         except Exception as e:
             logger.error(f"LangGraph workflow execution failed: {str(e)}")
             raise WorkflowError(f"LangGraph execution failed: {str(e)}")
@@ -376,7 +379,9 @@ class Orchestrator:
             )
         except Exception as e:
             # Fallback to simple retrieval if filtered retrieval fails
-            logger.warning(f"Filtered memory retrieval failed, falling back to simple retrieval: {e}")
+            logger.warning(
+                f"Filtered memory retrieval failed, falling back to simple retrieval: {e}"
+            )
             results = self.memory_manager.retrieve(query, limit=limit)
 
         if not results:
@@ -395,14 +400,14 @@ class Orchestrator:
             else:
                 lines.append(f"- {content}")
         return "\n".join(lines) if len(lines) > 1 else None
-    
+
     def add_agent(self, agent_config: AgentConfig) -> Agent:
         """
         Add a new agent to the orchestrator.
-        
+
         Args:
             agent_config: Configuration for the new agent.
-        
+
         Returns:
             The created agent.
         """
@@ -419,23 +424,23 @@ class Orchestrator:
             return agent
         except Exception as e:
             raise AgentCreationError(f"Failed to add agent: {str(e)}")
-    
+
     def add_task(self, task_config: TaskConfig) -> Task:
         """
         Add a new task to the orchestrator.
-        
+
         Args:
             task_config: Configuration for the new task.
-        
+
         Returns:
             The created task.
         """
         try:
             # Check if agent exists
-            agent = self.agents.get(task_config.agent_name)
+            agent = self.agents.get(task_config.agent)
             if not agent:
-                raise TaskExecutionError(f"Agent '{task_config.agent_name}' not found")
-            
+                raise TaskExecutionError(f"Agent '{task_config.agent}' not found")
+
             # Create task
             task = self.task_factory.create_task(task_config, agent)
             self.tasks.append(task)
@@ -449,32 +454,30 @@ class Orchestrator:
             return task
         except Exception as e:
             raise TaskExecutionError(f"Failed to add task: {str(e)}")
-    
+
     def register_agent_template(self, template) -> None:
         """Register a custom agent template."""
         self.agent_factory.register_template(template)
-    
+
     def register_task_template(self, template) -> None:
         """Register a custom task template."""
         self.task_factory.register_template(template)
-    
+
     def get_agent(self, name: str) -> Optional[Agent]:
         """Get an agent by name."""
         return self.agents.get(name)
-    
+
     def get_task(self, name: str) -> Optional[Task]:
         """Get a task by name."""
         for task in self.tasks:
             if task.name == name:
                 return task
         return None
-    
+
     def get_workflow_status(self) -> Dict[str, Any]:
         """Get current workflow status."""
-        if self.workflow_engine:
-            return self.workflow_engine.get_workflow_status()
         return {"status": "not_initialized"}
-    
+
     def get_system_info(self) -> Dict[str, Any]:
         """Get information about the orchestrator system."""
         info = {
@@ -483,22 +486,22 @@ class Orchestrator:
             "agents": {
                 "total": len(self.config.agents),
                 "enabled": len([a for a in self.config.agents if a.enabled]),
-                "types": list(self.agent_factory.list_templates())
+                "types": list(self.agent_factory.list_templates()),
             },
             "tasks": {
                 "total": len(self.config.tasks),
-                "types": list(self.task_factory.list_templates())
+                "types": list(self.task_factory.list_templates()),
             },
             "execution": {
                 "process": self.config.process,
                 "async": self.config.async_execution,
-                "memory": (self.config.memory is not None)
-            }
+                "memory": (self.config.memory is not None),
+            },
         }
-        
+
         if self.memory_manager:
             info["memory"] = self.memory_manager.get_provider_info()
-        
+
         return info
 
     def export_config(self, file_path: Union[str, Path]) -> None:
@@ -506,109 +509,90 @@ class Orchestrator:
         self.config.save_to_file(file_path)
         logger.info(f"Configuration exported to: {file_path}")
 
-    def create_graph_tool(self, *, user_id: Optional[str] = None, run_id: Optional[str] = None):
+    def create_graph_tool(
+        self, *, user_id: Optional[str] = None, run_id: Optional[str] = None
+    ):
         """Create a GraphRAG lookup tool if the memory manager supports it."""
         if not self.memory_manager:
-            raise MemoryError("Memory manager not initialized; cannot create graph tool")
+            raise MemoryError(
+                "Memory manager not initialized; cannot create graph tool"
+            )
         user = user_id or self.config.user_id
-        run = run_id or self.config.user_id
-        return self.memory_manager.create_graph_tool(default_user_id=user, default_run_id=run)
-    
+        run = run_id or self.config.run_id
+        return self.memory_manager.create_graph_tool(
+            default_user_id=user, default_run_id=run
+        )
+
     def import_config(self, file_path: Union[str, Path]) -> None:
         """Import configuration from file and reinitialize."""
         new_config = OrchestratorConfig.from_file(file_path)
         self.config = new_config
-        
+
         # Reinitialize with new config
         self.is_initialized = False
         self.initialize()
-        
+
         logger.info(f"Configuration imported from: {file_path}")
-    
+
     def merge_config(self, other_config: OrchestratorConfig) -> None:
         """Merge another configuration with current one."""
         self.config = self.config.merge(other_config)
-        
+
         # Reinitialize with merged config
         self.is_initialized = False
         self.initialize()
-        
+
         logger.info("Configuration merged and reinitialized")
-    
+
     def reset(self) -> None:
         """Reset the orchestrator to initial state."""
         self.agents.clear()
         self.tasks.clear()
         self.compiled_graph = None
         self.is_initialized = False
-        
+
         if self.memory_manager:
             self.memory_manager.cleanup()
             self.memory_manager = None
-        
-        if self.workflow_engine:
-            self.workflow_engine.reset_workflow()
-            self.workflow_engine = None
-        
+
         logger.info("Orchestrator reset")
-    
+
     def cleanup(self) -> None:
         """Cleanup resources."""
         if self.memory_manager:
             self.memory_manager.cleanup()
 
-        if self.workflow_engine:
-            self.workflow_engine.cancel_workflow()
-
         # Clean up MCP client connections
-        if self.agent_factory and hasattr(self.agent_factory, 'cleanup_mcp'):
+        if self.agent_factory and hasattr(self.agent_factory, "cleanup_mcp"):
             try:
-                asyncio.run(self.agent_factory.cleanup_mcp())
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    loop = None
+
+                if loop and loop.is_running():
+                    loop.create_task(self.agent_factory.cleanup_mcp())
+                else:
+                    asyncio.run(self.agent_factory.cleanup_mcp())
             except Exception as e:
                 logger.warning(f"Error cleaning up MCP connections: {e}")
 
         self.reset()
         logger.info("Orchestrator cleanup completed")
-    
-    # Callback handlers
-    def _on_task_start(self, task_name: str, execution: Any) -> None:
-        """Handle task start event."""
-        logger.debug(f"Task started: {task_name}")
-        if self.on_task_start:
-            self.on_task_start(task_name, execution)
-    
-    def _on_task_complete(self, task_name: str, execution: Any) -> None:
-        """Handle task completion event."""
-        logger.debug(f"Task completed: {task_name}")
-        if self.on_task_complete:
-            self.on_task_complete(task_name, execution)
-    
-    def _on_task_fail(self, task_name: str, execution: Any) -> None:
-        """Handle task failure event."""
-        logger.warning(f"Task failed: {task_name}")
-        if self.on_error:
-            self.on_error(execution.error)
-    
-    def _on_workflow_complete(self, metrics: WorkflowMetrics) -> None:
-        """Handle workflow completion event."""
-        logger.info(f"Workflow completed - Duration: {metrics.total_duration:.2f}s, "
-                   f"Tasks: {metrics.completed_tasks}/{metrics.total_tasks}")
-        if self.on_workflow_complete:
-            self.on_workflow_complete(metrics)
-    
+
     # Class methods for quick creation
     @classmethod
     def from_file(cls, file_path: Union[str, Path]) -> "Orchestrator":
         """Create orchestrator from configuration file."""
         config = OrchestratorConfig.from_file(file_path)
         return cls(config)
-    
+
     @classmethod
     def from_dict(cls, config_dict: Dict[str, Any]) -> "Orchestrator":
         """Create orchestrator from configuration dictionary."""
         config = OrchestratorConfig.from_dict(config_dict)
         return cls(config)
-    
+
     @classmethod
     def from_env(cls, prefix: str = "ORCHESTRATOR_") -> "Orchestrator":
         """Create orchestrator from environment variables."""
@@ -619,92 +603,84 @@ class Orchestrator:
     def create_default(cls, name: str = "DefaultOrchestrator") -> "Orchestrator":
         """Create orchestrator with default configuration and common agents/tasks."""
         from ..factories.agent_factory import (
-            OrchestratorAgentTemplate, ResearcherAgentTemplate, 
-            PlannerAgentTemplate, ImplementerAgentTemplate,
-            TesterAgentTemplate, WriterAgentTemplate
+            OrchestratorAgentTemplate,
+            ResearcherAgentTemplate,
+            PlannerAgentTemplate,
+            ImplementerAgentTemplate,
+            TesterAgentTemplate,
+            WriterAgentTemplate,
         )
         from ..factories.task_factory import (
-            ResearchTaskTemplate, PlanningTaskTemplate,
-            ImplementationTaskTemplate, TestingTaskTemplate,
-            DocumentationTaskTemplate
+            ResearchTaskTemplate,
+            PlanningTaskTemplate,
+            ImplementationTaskTemplate,
+            TestingTaskTemplate,
+            DocumentationTaskTemplate,
         )
-        
+
         # Create configuration with default agents and tasks
         config = OrchestratorConfig(name=name)
-        
+
         # Add default agents
         agent_templates = [
             OrchestratorAgentTemplate(),
-            ResearcherAgentTemplate(), 
+            ResearcherAgentTemplate(),
             PlannerAgentTemplate(),
             ImplementerAgentTemplate(),
             TesterAgentTemplate(),
-            WriterAgentTemplate()
+            WriterAgentTemplate(),
         ]
-        
+
         for template in agent_templates:
             agent_config = template.get_default_config()
             config.agents.append(agent_config)
-        
+
         # Add default tasks with dependencies
         task_configs = [
             TaskConfig(
                 name="research_task",
                 description="Research best practices for the given topic.",
                 expected_output="Comprehensive research findings with citations",
-                agent_name="Researcher",
+                agent="Researcher",
                 async_execution=True,
-                is_start=True
+                is_start=True,
             ),
             TaskConfig(
-                name="plan_task", 
+                name="plan_task",
                 description="Create an actionable plan based on research.",
                 expected_output="Detailed plan with steps and acceptance criteria",
-                agent_name="Planner",
+                agent="Planner",
                 async_execution=True,
-                is_start=True
+                is_start=True,
             ),
             TaskConfig(
                 name="implement_task",
                 description="Implement the solution according to the plan.",
                 expected_output="Implementation details and design notes",
-                agent_name="Implementer",
-                context=["research_task", "plan_task"]
+                agent="Implementer",
+                context=["research_task", "plan_task"],
             ),
             TaskConfig(
                 name="test_task",
                 description="Create test strategy for the implementation.",
                 expected_output="Test plan with cases and expected outcomes",
-                agent_name="Tester",
-                context=["implement_task"]
+                agent="Tester",
+                context=["implement_task"],
             ),
             TaskConfig(
                 name="document_task",
                 description="Create comprehensive documentation.",
                 expected_output="Final documentation with summary and details",
-                agent_name="Writer",
-                context=["research_task", "plan_task", "implement_task", "test_task"]
-            )
+                agent="Writer",
+                context=["research_task", "plan_task", "implement_task", "test_task"],
+            ),
         ]
-        
+
         config.tasks.extend(task_configs)
-        
+
         return cls(config)
 
     # ------------------------- Dynamic planning helpers -------------------------
-    def _initialize_workflow_engine(self) -> None:
-        """Create or reset the workflow engine with standard callbacks."""
-        self.workflow_engine = WorkflowEngine(
-            process_type=self.config.process,
-            max_concurrent_tasks=5,
-            max_retries=3,
-            timeout=None,
-        )
-        self.workflow_engine.on_task_start = self._on_task_start
-        self.workflow_engine.on_task_complete = self._on_task_complete
-        self.workflow_engine.on_task_fail = self._on_task_fail
-        self.workflow_engine.on_workflow_complete = self._on_workflow_complete
-
     def plan_from_prompt(
         self,
         prompt: str,
@@ -720,7 +696,9 @@ class Orchestrator:
         if not self.is_initialized:
             self.initialize()
 
-        enabled_agents = {agent.name: agent for agent in self.config.agents if agent.enabled}
+        enabled_agents = {
+            agent.name: agent for agent in self.config.agents if agent.enabled
+        }
         missing_agents = [name for name in agent_sequence if name not in enabled_agents]
         if missing_agents:
             raise AgentCreationError(
@@ -734,9 +712,15 @@ class Orchestrator:
         for index, agent_name in enumerate(agent_sequence):
             agent_cfg = enabled_agents[agent_name]
             task_name = self._generate_task_name(agent_name, index)
-            assignment_payload = assignment_iter[index] if index < len(assignment_iter) else {}
-            objective = assignment_payload.get("objective") or assignment_payload.get("description")
-            deliverable = assignment_payload.get("expected_output") or assignment_payload.get("deliverable")
+            assignment_payload = (
+                assignment_iter[index] if index < len(assignment_iter) else {}
+            )
+            objective = assignment_payload.get("objective") or assignment_payload.get(
+                "description"
+            )
+            deliverable = assignment_payload.get(
+                "expected_output"
+            ) or assignment_payload.get("deliverable")
             tags = assignment_payload.get("tags")
             description = self._compose_task_description(
                 agent_cfg,
@@ -746,7 +730,9 @@ class Orchestrator:
                 assignment_objective=objective,
                 assignment_tags=tags,
             )
-            expected_output = self._compose_expected_output(agent_cfg, prompt, deliverable=deliverable)
+            expected_output = self._compose_expected_output(
+                agent_cfg, prompt, deliverable=deliverable
+            )
             dynamic_tasks.append(
                 TaskConfig(
                     name=task_name,
@@ -764,8 +750,7 @@ class Orchestrator:
         self.config.tasks = dynamic_tasks
         self.tasks = []
 
-        # Refresh workflow engine state and LangGraph system
-        self._initialize_workflow_engine()
+        # Refresh LangGraph system
         self._create_langgraph_system()
 
     @staticmethod
@@ -785,38 +770,46 @@ class Orchestrator:
     ) -> str:
         recall_block = ""
         if recall_snippets:
-            formatted = "\n".join(f"  - {snippet}" for snippet in recall_snippets if snippet)
+            formatted = "\n".join(
+                f"  - {snippet}" for snippet in recall_snippets if snippet
+            )
             if formatted:
-                recall_block = f"\nContexto recuperado:\n{formatted}"
+                recall_block = f"\nRecalled context:\n{formatted}"
 
-        hint_block = f"\nTipo de tarea sugerido: {task_hint}" if task_hint else ""
-        objective_block = f"\nObjetivo específico: {assignment_objective}" if assignment_objective else ""
+        hint_block = f"\nSuggested task type: {task_hint}" if task_hint else ""
+        objective_block = (
+            f"\nSpecific objective: {assignment_objective}"
+            if assignment_objective
+            else ""
+        )
         tags_block = ""
         if assignment_tags:
             tag_str = ", ".join(str(tag) for tag in assignment_tags if tag)
             if tag_str:
-                tags_block = f"\nEtiquetas: {tag_str}"
+                tags_block = f"\nTags: {tag_str}"
 
         return (
             dedent(
                 f"""
-                Rol del agente: {agent_cfg.role}
-                Objetivo base: {agent_cfg.goal}{hint_block}{objective_block}{tags_block}
+                Agent role: {agent_cfg.role}
+                Base goal: {agent_cfg.goal}{hint_block}{objective_block}{tags_block}
 
-                Prompt actual:
+                Current prompt:
                 {prompt}
                 """
             ).strip()
             + recall_block
-            + "\n\nSigue tus instrucciones base y entrega un resultado concreto y accionable."
+            + "\n\nFollow your base instructions and deliver a concrete, actionable result."
         )
 
     @staticmethod
-    def _compose_expected_output(agent_cfg: AgentConfig, prompt: str, *, deliverable: Optional[str] = None) -> str:
-        goal = agent_cfg.goal or "Produce un entregable"
+    def _compose_expected_output(
+        agent_cfg: AgentConfig, prompt: str, *, deliverable: Optional[str] = None
+    ) -> str:
+        goal = agent_cfg.goal or "Produce a deliverable"
         if deliverable:
-            return f"{deliverable} (objetivo base: {goal}). Contexto: {prompt}"
-        return f"{goal}. Responde al prompt: {prompt}"
+            return f"{deliverable} (base goal: {goal}). Context: {prompt}"
+        return f"{goal}. Respond to the prompt: {prompt}"
 
     @staticmethod
     def _task_type_hint(agent_name: str) -> Optional[str]:
@@ -828,17 +821,19 @@ class Orchestrator:
             "QuickResponder": "documentation",
         }
         return hints.get(agent_name)
-    
+
     def __enter__(self):
         """Context manager entry."""
         return self
-    
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit with cleanup."""
         self.cleanup()
-    
+
     def __repr__(self) -> str:
         """String representation."""
-        return (f"Orchestrator(name='{self.config.name}', "
-                f"agents={len(self.agents)}, tasks={len(self.tasks)}, "
-                f"initialized={self.is_initialized})")
+        return (
+            f"Orchestrator(name='{self.config.name}', "
+            f"agents={len(self.agents)}, tasks={len(self.tasks)}, "
+            f"initialized={self.is_initialized})"
+        )

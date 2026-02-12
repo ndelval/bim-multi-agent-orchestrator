@@ -18,7 +18,6 @@ from ..integrations.langchain_integration import (
 from ..memory.memory_manager import MemoryManager
 from .config import OrchestratorConfig, AgentConfig, TaskConfig
 from .exceptions import WorkflowError, AgentCreationError
-from ..workflow.workflow_engine import WorkflowEngine
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +35,6 @@ class OrchestratorExecutor:
         config: OrchestratorConfig,
         compiled_graph: Any,
         memory_manager: Optional[MemoryManager] = None,
-        workflow_engine: Optional[WorkflowEngine] = None
     ):
         """
         Initialize the orchestrator executor.
@@ -45,17 +43,12 @@ class OrchestratorExecutor:
             config: Orchestrator configuration
             compiled_graph: Compiled LangGraph StateGraph
             memory_manager: Optional memory manager for recall
-            workflow_engine: Optional workflow engine for callbacks
         """
         self.config = config
         self.compiled_graph = compiled_graph
         self.memory_manager = memory_manager
-        self.workflow_engine = workflow_engine
 
-    async def run_langgraph_workflow(
-        self,
-        recall_content: Optional[str] = None
-    ) -> Any:
+    async def run_langgraph_workflow(self, recall_content: Optional[str] = None) -> Any:
         """
         Run the LangGraph StateGraph workflow.
 
@@ -78,7 +71,7 @@ class OrchestratorExecutor:
                 input_prompt=user_prompt,
                 memory_context=recall_content,
                 max_iterations=self.config.max_iterations,
-                recall_items=recall_content.split('\n') if recall_content else []
+                recall_items=recall_content.split("\n") if recall_content else [],
             )
 
             # Execute the StateGraph
@@ -103,14 +96,14 @@ class OrchestratorExecutor:
             Final output content
         """
         # Check for final_output attribute
-        if hasattr(result, 'final_output') and result.final_output:
+        if hasattr(result, "final_output") and result.final_output:
             return result.final_output
 
         # Check messages
-        if hasattr(result, 'messages') and result.messages:
+        if hasattr(result, "messages") and result.messages:
             # Return the last AI message
             for message in reversed(result.messages):
-                if hasattr(message, 'content') and 'AI' in str(type(message)):
+                if hasattr(message, "content") and "AI" in str(type(message)):
                     return message.content
 
         # Fallback - return the entire state as string
@@ -227,10 +220,16 @@ class OrchestratorExecutor:
         for index, agent_name in enumerate(agent_sequence):
             agent_cfg = enabled_agents[agent_name]
             task_name = self._generate_task_name(agent_name, index)
-            assignment_payload = assignment_iter[index] if index < len(assignment_iter) else {}
+            assignment_payload = (
+                assignment_iter[index] if index < len(assignment_iter) else {}
+            )
 
-            objective = assignment_payload.get("objective") or assignment_payload.get("description")
-            deliverable = assignment_payload.get("expected_output") or assignment_payload.get("deliverable")
+            objective = assignment_payload.get("objective") or assignment_payload.get(
+                "description"
+            )
+            deliverable = assignment_payload.get(
+                "expected_output"
+            ) or assignment_payload.get("deliverable")
             tags = assignment_payload.get("tags")
 
             description = self._compose_task_description(
@@ -241,7 +240,9 @@ class OrchestratorExecutor:
                 assignment_objective=objective,
                 assignment_tags=tags,
             )
-            expected_output = self._compose_expected_output(agent_cfg, prompt, deliverable=deliverable)
+            expected_output = self._compose_expected_output(
+                agent_cfg, prompt, deliverable=deliverable
+            )
 
             dynamic_tasks.append(
                 TaskConfig(
@@ -277,44 +278,47 @@ class OrchestratorExecutor:
         """Compose task description from agent config and prompt."""
         recall_block = ""
         if recall_snippets:
-            formatted = "\n".join(f"  - {snippet}" for snippet in recall_snippets if snippet)
+            formatted = "\n".join(
+                f"  - {snippet}" for snippet in recall_snippets if snippet
+            )
             if formatted:
-                recall_block = f"\nContexto recuperado:\n{formatted}"
+                recall_block = f"\nRecalled context:\n{formatted}"
 
-        hint_block = f"\nTipo de tarea sugerido: {task_hint}" if task_hint else ""
-        objective_block = f"\nObjetivo específico: {assignment_objective}" if assignment_objective else ""
+        hint_block = f"\nSuggested task type: {task_hint}" if task_hint else ""
+        objective_block = (
+            f"\nSpecific objective: {assignment_objective}"
+            if assignment_objective
+            else ""
+        )
         tags_block = ""
         if assignment_tags:
             tag_str = ", ".join(str(tag) for tag in assignment_tags if tag)
             if tag_str:
-                tags_block = f"\nEtiquetas: {tag_str}"
+                tags_block = f"\nTags: {tag_str}"
 
         return (
             dedent(
                 f"""
-                Rol del agente: {agent_cfg.role}
-                Objetivo base: {agent_cfg.goal}{hint_block}{objective_block}{tags_block}
+                Agent role: {agent_cfg.role}
+                Base goal: {agent_cfg.goal}{hint_block}{objective_block}{tags_block}
 
-                Prompt actual:
+                Current prompt:
                 {prompt}
                 """
             ).strip()
             + recall_block
-            + "\n\nSigue tus instrucciones base y entrega un resultado concreto y accionable."
+            + "\n\nFollow your base instructions and deliver a concrete, actionable result."
         )
 
     @staticmethod
     def _compose_expected_output(
-        agent_cfg: AgentConfig,
-        prompt: str,
-        *,
-        deliverable: Optional[str] = None
+        agent_cfg: AgentConfig, prompt: str, *, deliverable: Optional[str] = None
     ) -> str:
         """Compose expected output from agent config and prompt."""
-        goal = agent_cfg.goal or "Produce un entregable"
+        goal = agent_cfg.goal or "Produce a deliverable"
         if deliverable:
-            return f"{deliverable} (objetivo base: {goal}). Contexto: {prompt}"
-        return f"{goal}. Responde al prompt: {prompt}"
+            return f"{deliverable} (base goal: {goal}). Context: {prompt}"
+        return f"{goal}. Respond to the prompt: {prompt}"
 
     @staticmethod
     def _task_type_hint(agent_name: str) -> Optional[str]:

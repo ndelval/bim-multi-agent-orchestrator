@@ -5,15 +5,10 @@ This module provides clean imports for LangChain/LangGraph components
 """
 
 import logging
-from typing import Optional, Any, Dict, List, Union, TYPE_CHECKING, TypedDict, Annotated
+from typing import Optional, Any, Dict, List, Union, TYPE_CHECKING, Annotated
 from dataclasses import dataclass, field
-from rich.console import Console
-from rich.panel import Panel
-from rich.syntax import Syntax
-from rich.table import Table
 
 logger = logging.getLogger(__name__)
-console = Console()
 
 
 # LangGraph reducer functions for concurrent state updates
@@ -108,23 +103,6 @@ except ImportError as e:
     LANGCHAIN_AVAILABLE = False
 
 
-class RouterDecision(TypedDict, total=False):
-    """
-    Structured type for router decision results.
-
-    Attributes:
-        route: The selected route name
-        confidence: Confidence score (0.0-1.0)
-        method: Routing method used (e.g., 'rule_based', 'llm_based')
-        reasoning: Optional explanation for the routing decision
-    """
-
-    route: str
-    confidence: float
-    method: str
-    reasoning: Optional[str]
-
-
 @dataclass
 class OrchestratorState:
     """
@@ -154,7 +132,7 @@ class OrchestratorState:
     current_route: Optional[str] = (
         None  # "quick", "research", "analysis", "standards" - SAFE: only router writes (single-writer)
     )
-    router_decision: Optional[RouterDecision] = (
+    router_decision: Optional[Dict[str, Any]] = (
         None  # Structured routing decision - SAFE: only router writes (single-writer)
     )
     assignments: Optional[List[Dict[str, Any]]] = (
@@ -385,52 +363,31 @@ Always provide clear, actionable responses based on your role and expertise."""
     def execute(
         self, task_description: str, context: Optional[Dict[str, Any]] = None
     ) -> str:
-        """Execute task using LangChain agent with detailed logging."""
+        """Execute task using LangChain agent with detailed logging.
+
+        Raises:
+            AgentExecutionError: If the agent execution fails.
+        """
+        from ..core.exceptions import AgentExecutionError
+
         if not LANGCHAIN_AVAILABLE:
-            return f"Error: LangChain not available for agent {self.name}"
+            raise AgentExecutionError(
+                agent_name=self.name,
+                original_error=RuntimeError("LangChain not available"),
+            )
 
         try:
-            # PHASE 3: Display agent execution details with Rich
-            # Create task info panel
-            task_info = f"[bold cyan]Task:[/bold cyan] {task_description}\n\n"
-
-            # Add tools info
+            # Log agent execution details
+            tool_names = []
             if hasattr(self, "tools") and self.tools:
                 tool_names = [
                     tool.name if hasattr(tool, "name") else str(tool)
                     for tool in self.tools
                 ]
-                task_info += (
-                    f"[bold yellow]🔧 Tools ({len(tool_names)}):[/bold yellow]\n"
-                )
-                for tool_name in tool_names:
-                    task_info += f"  • {tool_name}\n"
-            else:
-                task_info += f"[bold yellow]🔧 Tools:[/bold yellow] None\n"
-
-            # Add context info
-            if context:
-                task_info += f"\n[bold green]📋 Context:[/bold green]\n"
-                if context.get("messages"):
-                    task_info += f"  Messages: {len(context['messages'])}\n"
-                    # Show last 2 messages
-                    for i, msg in enumerate(context["messages"][-2:], 1):
-                        msg_type = type(msg).__name__
-                        msg_content = (
-                            str(msg.content)[:200]
-                            if hasattr(msg, "content")
-                            else str(msg)[:200]
-                        )
-                        task_info += f"  [{i}] {msg_type}: {msg_content}...\n"
-                else:
-                    task_info += f"  {str(context)[:200]}\n"
-
-            console.print(
-                Panel(
-                    task_info,
-                    title=f"🤖 [bold blue]Agent Execution: {self.name}[/bold blue]",
-                    border_style="blue",
-                )
+            logger.info(
+                "Agent '%s' executing task (tools: %s)",
+                self.name,
+                tool_names or "none",
             )
 
             # Execute agent
@@ -467,28 +424,17 @@ Always provide clear, actionable responses based on your role and expertise."""
             else:
                 output = str(result)
 
-            # PHASE 3: Display agent output with Rich
-            # Truncate if too long
-            display_output = (
-                output
-                if len(output) <= 1000
-                else f"{output[:1000]}...\n\n[dim](truncated, total length: {len(output)} chars)[/dim]"
-            )
-
-            console.print(
-                Panel(
-                    display_output,
-                    title=f"✅ [bold green]Agent Output: {self.name}[/bold green] [dim]({len(output)} chars)[/dim]",
-                    border_style="green",
-                )
-            )
+            logger.info("Agent '%s' completed (%d chars)", self.name, len(output))
 
             return output
 
         except Exception as e:
-            logger.error(f"❌ Agent {self.name} execution failed: {e}")
+            logger.error(f"Agent {self.name} execution failed: {e}")
             logger.exception("Full exception traceback:")
-            return f"Error: Agent execution failed - {str(e)}"
+            raise AgentExecutionError(
+                agent_name=self.name,
+                original_error=e,
+            ) from e
 
 
 class LangChainTask:
@@ -597,7 +543,6 @@ def get_langgraph_version() -> Optional[str]:
 # Re-export key classes for clean imports
 __all__ = [
     "OrchestratorState",
-    "RouterDecision",
     "LangChainAgent",
     "LangChainTask",
     "create_default_tools",

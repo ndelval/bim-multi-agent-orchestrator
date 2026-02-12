@@ -6,9 +6,10 @@ from .exceptions import (
     OrchestratorError,
     ConfigurationError,
     AgentCreationError,
+    AgentExecutionError,
     TaskExecutionError,
     MemoryError,
-    WorkflowError
+    WorkflowError,
 )
 
 __all__ = [
@@ -17,7 +18,8 @@ __all__ = [
     "OrchestratorError",
     "ConfigurationError",
     "AgentCreationError",
+    "AgentExecutionError",
     "TaskExecutionError",
     "MemoryError",
-    "WorkflowError"
+    "WorkflowError",
 ]
