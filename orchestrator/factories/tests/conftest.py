@@ -23,21 +23,31 @@ def setup_test_env():
 
 @pytest.fixture(autouse=True)
 def mock_langchain_llm(monkeypatch):
-    """Mock LangChain's ChatOpenAI to avoid actual API calls in tests."""
+    """Mock LLM creation to avoid actual API calls in tests.
+
+    Mocks both the new LLMFactory.create() path and the legacy ChatOpenAI
+    path for backward compatibility during transition.
+    """
     mock_llm = Mock()
     mock_llm.invoke = Mock(return_value="Mocked LLM response")
     mock_llm.ainvoke = Mock(return_value="Mocked async LLM response")
 
-    # Mock the ChatOpenAI class
-    def mock_chatopenai(*args, **kwargs):
-        return mock_llm
+    # Mock LLMFactory.create (new provider-agnostic path)
+    try:
+        monkeypatch.setattr(
+            "orchestrator.core.llm_factory.LLMFactory.create",
+            staticmethod(lambda *args, **kwargs: mock_llm),
+        )
+    except Exception:
+        pass
 
+    # Keep legacy ChatOpenAI mock for backward compatibility
     try:
         monkeypatch.setattr(
             "orchestrator.integrations.langchain_integration.ChatOpenAI",
-            mock_chatopenai,
+            lambda *args, **kwargs: mock_llm,
         )
-    except:
+    except Exception:
         pass
 
     return mock_llm
@@ -79,6 +89,34 @@ def orchestrator_config():
         backstory="Expert coordinator",
         instructions="Coordinate effectively",
         tools=[],
+    )
+
+
+@pytest.fixture
+def config_with_whitelist():
+    """Agent configuration with tool whitelist."""
+    return AgentConfig(
+        name="WhitelistAgent",
+        role="Research Specialist",
+        goal="Gather info",
+        backstory="Expert researcher",
+        instructions="Research thoroughly",
+        tools=["duckduckgo"],
+        allowed_tools=["duckduckgo_search"],
+    )
+
+
+@pytest.fixture
+def config_with_empty_whitelist():
+    """Agent configuration with empty whitelist (no tools allowed)."""
+    return AgentConfig(
+        name="NoToolsAgent",
+        role="Analyst",
+        goal="Analyze data",
+        backstory="Expert analyst",
+        instructions="Analyze carefully",
+        tools=["duckduckgo"],
+        allowed_tools=[],
     )
 
 

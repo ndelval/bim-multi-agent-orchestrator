@@ -12,12 +12,24 @@ from typing import Dict, List, Any, Optional, Callable, Set, Tuple
 from dataclasses import asdict
 
 from .graph_specifications import (
-    StateGraphSpec, GraphNodeSpec, GraphEdgeSpec, NodeType, EdgeType,
-    RoutingStrategy, GraphCondition, ParallelGroup
+    StateGraphSpec,
+    GraphNodeSpec,
+    GraphEdgeSpec,
+    NodeType,
+    EdgeType,
+    RoutingStrategy,
+    GraphCondition,
+    ParallelGroup,
 )
 from ..integrations.langchain_integration import (
-    StateGraph, START, END, OrchestratorState, LangChainAgent,
-    HumanMessage, AIMessage, is_available
+    StateGraph,
+    START,
+    END,
+    OrchestratorState,
+    LangChainAgent,
+    HumanMessage,
+    AIMessage,
+    is_available,
 )
 from ..factories.graph_factory import GraphFactory
 from ..factories.agent_factory import AgentFactory
@@ -30,67 +42,71 @@ logger = logging.getLogger(__name__)
 class GraphCompiler:
     """
     Compiler that transforms ToT StateGraph specifications into executable LangGraph StateGraphs.
-    
+
     This class bridges the gap between the declarative graph specifications generated
     by Tree-of-Thought planning and the executable StateGraph objects required by
     the LangGraph runtime.
     """
-    
+
     def __init__(self, agent_factory: Optional[AgentFactory] = None):
         """Initialize the graph compiler."""
         if not is_available():
-            raise GraphCreationError("LangChain components not available for graph compilation")
-        
+            raise GraphCreationError(
+                "LangChain components not available for graph compilation"
+            )
+
         self.agent_factory = agent_factory or AgentFactory()
         self.graph_factory = GraphFactory(self.agent_factory)
-        
+
         # Compilation state
         self._agent_cache: Dict[str, LangChainAgent] = {}
         self._incoming_edges: Dict[str, List[str]] = {}
         self._node_functions: Dict[str, Callable] = {}
         self._compiled_graphs: Dict[str, StateGraph] = {}
-        
+
         logger.info("GraphCompiler initialized with LangGraph support")
-    
+
     def compile_graph_spec(
         self,
         graph_spec: StateGraphSpec,
         agent_configs: List[AgentConfig],
-        validation_mode: bool = True
+        validation_mode: bool = True,
     ) -> StateGraph:
         """
         Compile a StateGraphSpec into an executable LangGraph StateGraph.
-        
+
         Args:
             graph_spec: The graph specification to compile
             agent_configs: Available agent configurations
             validation_mode: Whether to perform validation before compilation
-            
+
         Returns:
             Compiled StateGraph ready for execution
-            
+
         Raises:
             GraphCreationError: If compilation fails
         """
         try:
             logger.info(f"Compiling graph specification: {graph_spec.name}")
-            
+
             # Validate graph specification if requested
             if validation_mode:
                 validation_errors = graph_spec.validate()
                 if validation_errors:
-                    raise GraphCreationError(f"Graph validation failed: {validation_errors}")
-            
+                    raise GraphCreationError(
+                        f"Graph validation failed: {validation_errors}"
+                    )
+
             # Build incoming edge map for contextual execution prompting
             incoming_edges_map = self._build_incoming_edges_map(graph_spec)
             self._incoming_edges = incoming_edges_map
 
             # Create agent configurations mapping
             agent_config_map = {config.name: config for config in agent_configs}
-            
+
             # Initialize StateGraph with orchestrator state
             workflow = StateGraph(OrchestratorState)
-            
+
             # Compile nodes
             self._compile_nodes(
                 workflow,
@@ -98,29 +114,33 @@ class GraphCompiler:
                 agent_config_map,
                 incoming_edges_map,
             )
-            
+
             # Compile edges
             self._compile_edges(workflow, graph_spec)
-            
+
             # Set entry and exit points
             self._set_entry_exit_points(workflow, graph_spec)
-            
+
             # Handle parallel groups
             self._handle_parallel_groups(workflow, graph_spec)
-            
+
             # Cache compiled graph
             self._compiled_graphs[graph_spec.name] = workflow
-            
-            logger.info(f"Successfully compiled graph '{graph_spec.name}' with "
-                       f"{len(graph_spec.nodes)} nodes and {len(graph_spec.edges)} edges")
-            
+
+            logger.info(
+                f"Successfully compiled graph '{graph_spec.name}' with "
+                f"{len(graph_spec.nodes)} nodes and {len(graph_spec.edges)} edges"
+            )
+
             return workflow
-            
+
         except Exception as e:
             logger.error(f"Failed to compile graph specification: {str(e)}")
             raise GraphCreationError(f"Graph compilation failed: {str(e)}")
-    
-    def _build_incoming_edges_map(self, graph_spec: StateGraphSpec) -> Dict[str, List[str]]:
+
+    def _build_incoming_edges_map(
+        self, graph_spec: StateGraphSpec
+    ) -> Dict[str, List[str]]:
         """Create a mapping of node name to its upstream nodes."""
         incoming_edges: Dict[str, List[str]] = defaultdict(list)
 
@@ -129,13 +149,13 @@ class GraphCompiler:
                 incoming_edges[edge_spec.to_node].append(edge_spec.from_node)
 
         return incoming_edges
-    
+
     def _compile_nodes(
         self,
         workflow: StateGraph,
         graph_spec: StateGraphSpec,
         agent_config_map: Dict[str, AgentConfig],
-        incoming_edges_map: Dict[str, List[str]]
+        incoming_edges_map: Dict[str, List[str]],
     ) -> None:
         """Compile nodes from graph specification."""
         for node_spec in graph_spec.nodes:
@@ -147,28 +167,34 @@ class GraphCompiler:
                 )
                 workflow.add_node(node_spec.name, node_function)
                 self._node_functions[node_spec.name] = node_function
-                
-                logger.debug(f"Compiled node: {node_spec.name} ({node_spec.type.value})")
-                
+
+                logger.debug(
+                    f"Compiled node: {node_spec.name} ({node_spec.type.value})"
+                )
+
             except Exception as e:
                 logger.error(f"Failed to compile node {node_spec.name}: {str(e)}")
-                raise GraphCreationError(f"Node compilation failed for {node_spec.name}: {str(e)}")
-    
+                raise GraphCreationError(
+                    f"Node compilation failed for {node_spec.name}: {str(e)}"
+                )
+
     def _create_node_function(
         self,
         node_spec: GraphNodeSpec,
         agent_config_map: Dict[str, AgentConfig],
-        incoming_edges_map: Dict[str, List[str]]
+        incoming_edges_map: Dict[str, List[str]],
     ) -> Callable:
         """Create a node function based on the node specification."""
-        
+
         if node_spec.type == NodeType.START:
             return self._create_start_function(node_spec)
         elif node_spec.type == NodeType.END:
             return self._create_end_function(node_spec)
         elif node_spec.type == NodeType.AGENT:
             incoming_nodes = incoming_edges_map.get(node_spec.name, [])
-            return self._create_agent_function(node_spec, agent_config_map, incoming_nodes)
+            return self._create_agent_function(
+                node_spec, agent_config_map, incoming_nodes
+            )
         elif node_spec.type == NodeType.ROUTER:
             return self._create_router_function(node_spec)
         elif node_spec.type == NodeType.CONDITION:
@@ -179,9 +205,10 @@ class GraphCompiler:
             return self._create_aggregator_function(node_spec)
         else:
             raise GraphCreationError(f"Unsupported node type: {node_spec.type}")
-    
+
     def _create_start_function(self, node_spec: GraphNodeSpec) -> Callable:
         """Create a start node function."""
+
         def start_function(state: OrchestratorState) -> Dict[str, Any]:
             logger.debug(f"Executing start node: {node_spec.name}")
 
@@ -190,7 +217,10 @@ class GraphCompiler:
             # Note: current_node removed - caused concurrent write errors in parallel execution
             updates = {
                 "execution_path": state.execution_path + [node_spec.name],
-                "node_outputs": {**state.node_outputs, node_spec.name: "Workflow initialized"}
+                "node_outputs": {
+                    **state.node_outputs,
+                    node_spec.name: "Workflow initialized",
+                },
             }
 
             # Add start message if not present
@@ -200,9 +230,10 @@ class GraphCompiler:
             return updates
 
         return start_function
-    
+
     def _create_end_function(self, node_spec: GraphNodeSpec) -> Callable:
         """Create an end node function."""
+
         def end_function(state: OrchestratorState) -> Dict[str, Any]:
             logger.debug(f"Executing end node: {node_spec.name}")
 
@@ -210,7 +241,10 @@ class GraphCompiler:
             # Note: current_node removed - caused concurrent write errors in parallel execution
             updates = {
                 "execution_path": state.execution_path + [node_spec.name],
-                "node_outputs": {**state.node_outputs, node_spec.name: "Workflow completed"}
+                "node_outputs": {
+                    **state.node_outputs,
+                    node_spec.name: "Workflow completed",
+                },
             }
 
             # Generate final output if not already present
@@ -225,12 +259,12 @@ class GraphCompiler:
             return updates
 
         return end_function
-    
+
     def _create_agent_function(
         self,
         node_spec: GraphNodeSpec,
         agent_config_map: Dict[str, AgentConfig],
-        incoming_nodes: List[str]
+        incoming_nodes: List[str],
     ) -> Callable:
         """Create an agent execution function."""
 
@@ -243,7 +277,9 @@ class GraphCompiler:
 
         # Cache agent creation
         if agent_name not in self._agent_cache:
-            self._agent_cache[agent_name] = self.agent_factory.create_agent(agent_config)
+            self._agent_cache[agent_name] = self.agent_factory.create_agent(
+                agent_config
+            )
 
         agent = self._agent_cache[agent_name]
 
@@ -255,7 +291,9 @@ class GraphCompiler:
                 logger.info(f"├{'─'*78}┤")
                 logger.info(f"│ Agent: {agent_name:<71} │")
                 logger.info(f"│ Type: {node_spec.type.value:<72} │")
-                logger.info(f"│ Execution Path: {' → '.join(state.execution_path[-3:]):<60} │")
+                logger.info(
+                    f"│ Execution Path: {' → '.join(state.execution_path[-3:]):<60} │"
+                )
                 logger.info(f"│ Completed Agents: {len(state.completed_agents):<61} │")
                 logger.info(f"└{'─'*78}┘")
 
@@ -263,9 +301,7 @@ class GraphCompiler:
 
                 # Build task description enriched with upstream context
                 task_description = self._build_task_description(
-                    node_spec,
-                    state,
-                    upstream_outputs
+                    node_spec, state, upstream_outputs
                 )
 
                 # PHASE 3: Log task description
@@ -306,31 +342,38 @@ class GraphCompiler:
                 return {
                     "agent_outputs": {**state.agent_outputs, node_spec.name: result},
                     "node_outputs": {**state.node_outputs, node_spec.name: result},
-                    "completed_agents": state.completed_agents + [f"{node_spec.name} ({agent_name})"],
+                    "completed_agents": state.completed_agents
+                    + [f"{node_spec.name} ({agent_name})"],
                     "execution_path": state.execution_path + [node_spec.name],
-                    "messages": [AIMessage(content=result)]  # add_messages will append
+                    "messages": [AIMessage(content=result)],  # add_messages will append
                 }
 
             except Exception as e:
-                error_msg = f"Agent {agent_name} failed in node {node_spec.name}: {str(e)}"
+                error_msg = (
+                    f"Agent {agent_name} failed in node {node_spec.name}: {str(e)}"
+                )
                 logger.error(f"❌ NODE FAILED: {node_spec.name}")
                 logger.error(f"   Error: {error_msg}")
                 logger.exception("Full exception:")
                 return {
-                    "errors": state.errors + [{
-                        "node": node_spec.name,
-                        "agent": agent_name,
-                        "message": error_msg,
-                        "recoverable": False
-                    }],
+                    "errors": state.errors
+                    + [
+                        {
+                            "node": node_spec.name,
+                            "agent": agent_name,
+                            "message": error_msg,
+                            "recoverable": False,
+                        }
+                    ],
                     "node_outputs": {**state.node_outputs, node_spec.name: error_msg},
-                    "error_state": error_msg
+                    "error_state": error_msg,
                 }
 
         return agent_function
-    
+
     def _create_router_function(self, node_spec: GraphNodeSpec) -> Callable:
         """Create a routing decision function."""
+
         def router_function(state: OrchestratorState) -> Dict[str, Any]:
             logger.debug(f"Executing router node: {node_spec.name}")
 
@@ -350,13 +393,17 @@ class GraphCompiler:
                 "execution_path": state.execution_path + [node_spec.name],
                 "router_decision": routing_result,
                 "current_route": route,
-                "node_outputs": {**state.node_outputs, node_spec.name: f"Routed to: {route}"}
+                "node_outputs": {
+                    **state.node_outputs,
+                    node_spec.name: f"Routed to: {route}",
+                },
             }
 
         return router_function
-    
+
     def _create_condition_function(self, node_spec: GraphNodeSpec) -> Callable:
         """Create a conditional logic function."""
+
         def condition_function(state: OrchestratorState) -> Dict[str, Any]:
             logger.debug(f"Executing condition node: {node_spec.name}")
 
@@ -370,21 +417,27 @@ class GraphCompiler:
             condition_result = all(results) if results else True
 
             # Build condition_results dict
-            updated_condition_results = state.condition_results.copy() if state.condition_results else {}
+            updated_condition_results = (
+                state.condition_results.copy() if state.condition_results else {}
+            )
             updated_condition_results[node_spec.name] = condition_result
 
             # Return ONLY modified fields
             # Note: current_node removed - caused concurrent write errors in parallel execution
             return {
                 "execution_path": state.execution_path + [node_spec.name],
-                "node_outputs": {**state.node_outputs, node_spec.name: f"Condition result: {condition_result}"},
-                "condition_results": updated_condition_results
+                "node_outputs": {
+                    **state.node_outputs,
+                    node_spec.name: f"Condition result: {condition_result}",
+                },
+                "condition_results": updated_condition_results,
             }
 
         return condition_function
-    
+
     def _create_parallel_function(self, node_spec: GraphNodeSpec) -> Callable:
         """Create a parallel coordination function."""
+
         def parallel_function(state: OrchestratorState) -> Dict[str, Any]:
             logger.debug(f"Executing parallel coordinator: {node_spec.name}")
 
@@ -393,13 +446,17 @@ class GraphCompiler:
             return {
                 "execution_path": state.execution_path + [node_spec.name],
                 "parallel_execution_active": True,
-                "node_outputs": {**state.node_outputs, node_spec.name: "Parallel execution initiated"}
+                "node_outputs": {
+                    **state.node_outputs,
+                    node_spec.name: "Parallel execution initiated",
+                },
             }
 
         return parallel_function
-    
+
     def _create_aggregator_function(self, node_spec: GraphNodeSpec) -> Callable:
         """Create a results aggregation function."""
+
         def aggregator_function(state: OrchestratorState) -> Dict[str, Any]:
             logger.debug(f"Executing aggregator node: {node_spec.name}")
 
@@ -417,11 +474,11 @@ class GraphCompiler:
             return {
                 "execution_path": state.execution_path + [node_spec.name],
                 "node_outputs": {**state.node_outputs, node_spec.name: output_message},
-                "parallel_execution_active": parallel_active
+                "parallel_execution_active": parallel_active,
             }
 
         return aggregator_function
-    
+
     def _compile_edges(self, workflow: StateGraph, graph_spec: StateGraphSpec) -> None:
         """Compile edges from graph specification."""
         for edge_spec in graph_spec.edges:
@@ -434,15 +491,20 @@ class GraphCompiler:
                 else:
                     # For other edge types, treat as direct for now
                     workflow.add_edge(edge_spec.from_node, edge_spec.to_node)
-                
-                logger.debug(f"Compiled edge: {edge_spec.from_node} -> {edge_spec.to_node}")
-                
+
+                logger.debug(
+                    f"Compiled edge: {edge_spec.from_node} -> {edge_spec.to_node}"
+                )
+
             except Exception as e:
-                logger.error(f"Failed to compile edge {edge_spec.from_node}->{edge_spec.to_node}: {str(e)}")
+                logger.error(
+                    f"Failed to compile edge {edge_spec.from_node}->{edge_spec.to_node}: {str(e)}"
+                )
                 # Continue with other edges rather than failing completely
-    
+
     def _create_edge_condition(self, edge_spec: GraphEdgeSpec) -> Callable:
         """Create a conditional edge function."""
+
         def edge_condition(state: OrchestratorState) -> str:
             if edge_spec.condition:
                 condition_result = edge_spec.condition.evaluate(state)
@@ -453,35 +515,41 @@ class GraphCompiler:
                     return END  # or another default route
             else:
                 return edge_spec.to_node
-        
+
         return edge_condition
-    
-    def _set_entry_exit_points(self, workflow: StateGraph, graph_spec: StateGraphSpec) -> None:
+
+    def _set_entry_exit_points(
+        self, workflow: StateGraph, graph_spec: StateGraphSpec
+    ) -> None:
         """Set entry and exit points for the graph."""
         # Set entry point
         if graph_spec.entry_point:
             workflow.set_entry_point(graph_spec.entry_point)
         else:
             # Find start node or use first node
-            start_nodes = [node.name for node in graph_spec.nodes if node.type == NodeType.START]
+            start_nodes = [
+                node.name for node in graph_spec.nodes if node.type == NodeType.START
+            ]
             if start_nodes:
                 workflow.set_entry_point(start_nodes[0])
             elif graph_spec.nodes:
                 workflow.set_entry_point(graph_spec.nodes[0].name)
-        
+
         # Add edges to END for exit points
         for exit_point in graph_spec.exit_points:
             if exit_point != "end":  # Avoid self-reference
                 workflow.add_edge(exit_point, END)
-    
-    def _handle_parallel_groups(self, workflow: StateGraph, graph_spec: StateGraphSpec) -> None:
+
+    def _handle_parallel_groups(
+        self, workflow: StateGraph, graph_spec: StateGraphSpec
+    ) -> None:
         """Handle parallel execution groups."""
         for parallel_group in graph_spec.parallel_groups:
             logger.debug(f"Processing parallel group: {parallel_group.group_id}")
             # Parallel group handling would be complex and might require
             # specialized LangGraph features or custom implementation
             # For now, we log the presence of parallel groups
-    
+
     def _build_task_description(
         self,
         node_spec: GraphNodeSpec,
@@ -490,26 +558,28 @@ class GraphCompiler:
     ) -> str:
         """Build task description for agent execution."""
         description_parts = []
-        
+
         # Add node objective
         if node_spec.objective:
             description_parts.append(f"Objective: {node_spec.objective}")
-        
+
         # Add expected output
         if node_spec.expected_output:
             description_parts.append(f"Expected Output: {node_spec.expected_output}")
-        
+
         # Add context from state
         if state.memory_context:
             description_parts.append(f"Context: {state.memory_context}")
-        
+
         # Add user prompt
         description_parts.append(f"User Request: {state.input_prompt}")
-        
+
         # Add execution context
         if state.completed_agents:
-            description_parts.append(f"Previous Agents: {', '.join(state.completed_agents)}")
-        
+            description_parts.append(
+                f"Previous Agents: {', '.join(state.completed_agents)}"
+            )
+
         if upstream_outputs:
             snippets = [
                 f"{entry['node']}: {self._summarize_output(entry.get('output'))}"
@@ -537,7 +607,7 @@ class GraphCompiler:
                 )
 
         return "\n\n".join(description_parts)
-    
+
     def _extract_upstream_outputs(
         self,
         state: OrchestratorState,
@@ -603,14 +673,18 @@ class GraphCompiler:
         if len(text) <= limit:
             return text
         return f"{text[: limit - 3]}..."
-    
-    def _llm_based_routing(self, node_spec: GraphNodeSpec, state: OrchestratorState) -> Dict[str, Any]:
+
+    def _llm_based_routing(
+        self, node_spec: GraphNodeSpec, state: OrchestratorState
+    ) -> Dict[str, Any]:
         """Implement LLM-based routing logic."""
         # This would use an LLM to make routing decisions
         # For now, return a default route
         return {"route": "default", "method": "llm_based", "confidence": 0.8}
-    
-    def _state_based_routing(self, node_spec: GraphNodeSpec, state: OrchestratorState) -> Dict[str, Any]:
+
+    def _state_based_routing(
+        self, node_spec: GraphNodeSpec, state: OrchestratorState
+    ) -> Dict[str, Any]:
         """Implement state-based routing logic."""
         # Route based on current state conditions
         if state.error_state:
@@ -619,12 +693,14 @@ class GraphCompiler:
             return {"route": "completion", "method": "state_based"}
         else:
             return {"route": "continue", "method": "state_based"}
-    
-    def _rule_based_routing(self, node_spec: GraphNodeSpec, state: OrchestratorState) -> Dict[str, Any]:
+
+    def _rule_based_routing(
+        self, node_spec: GraphNodeSpec, state: OrchestratorState
+    ) -> Dict[str, Any]:
         """Implement rule-based routing logic."""
         # Simple keyword-based routing
         prompt_lower = state.input_prompt.lower()
-        
+
         if any(word in prompt_lower for word in ["quick", "simple"]):
             return {"route": "quick", "method": "rule_based"}
         elif any(word in prompt_lower for word in ["research", "search"]):
@@ -633,7 +709,7 @@ class GraphCompiler:
             return {"route": "analysis", "method": "rule_based"}
         else:
             return {"route": "default", "method": "rule_based"}
-    
+
     def _generate_final_output(self, state: OrchestratorState) -> str:
         """Generate synthesized final output from agent results using LLM.
 
@@ -644,16 +720,20 @@ class GraphCompiler:
             return "No results generated."
 
         # Filter out system nodes (start, end) to show only agent results
-        agent_results = {k: v for k, v in state.node_outputs.items()
-                        if k not in ['start', 'end'] and v != "Workflow initialized" and v != "Workflow completed"}
+        agent_results = {
+            k: v
+            for k, v in state.node_outputs.items()
+            if k not in ["start", "end"]
+            and v != "Workflow initialized"
+            and v != "Workflow completed"
+        }
 
         if not agent_results:
             return "No results generated."
 
         # Build synthesis prompt with user query and agent outputs
         synthesis_prompt = self._build_synthesis_prompt(
-            user_query=state.input_prompt,
-            agent_outputs=agent_results
+            user_query=state.input_prompt, agent_outputs=agent_results
         )
 
         # Call LLM to synthesize final answer
@@ -662,7 +742,9 @@ class GraphCompiler:
         # Return ONLY the synthesized text (no display - handled by DisplayAdapter)
         return synthesized_answer
 
-    def _build_synthesis_prompt(self, user_query: str, agent_outputs: Dict[str, str]) -> str:
+    def _build_synthesis_prompt(
+        self, user_query: str, agent_outputs: Dict[str, str]
+    ) -> str:
         """Build synthesis prompt for LLM to create coherent final answer.
 
         Args:
@@ -673,10 +755,12 @@ class GraphCompiler:
             Formatted synthesis prompt string
         """
         # Format agent outputs for the prompt
-        formatted_outputs = "\n\n".join([
-            f"### Agent: {agent_name}\n{output}"
-            for agent_name, output in agent_outputs.items()
-        ])
+        formatted_outputs = "\n\n".join(
+            [
+                f"### Agent: {agent_name}\n{output}"
+                for agent_name, output in agent_outputs.items()
+            ]
+        )
 
         return f"""You are a synthesis agent that creates coherent final answers from multi-agent workflows.
 
@@ -709,13 +793,13 @@ Final Answer:"""
             Synthesized final answer
         """
         try:
-            # Import LLM from langchain integration
-            from ..integrations.langchain_integration import ChatOpenAI
+            # Create LLM instance via provider-agnostic factory
+            from ..core.llm_factory import LLMFactory
 
-            # Create LLM instance with appropriate settings for synthesis
-            llm = ChatOpenAI(
+            llm = LLMFactory.create(
+                provider="openai",
                 model="gpt-4o-mini",
-                temperature=0.3  # Lower temperature for more focused synthesis
+                temperature=0.3,
             )
 
             # Invoke LLM with synthesis prompt
@@ -724,13 +808,17 @@ Final Answer:"""
             # Extract and return synthesized content
             synthesized_text = result.content.strip()
 
-            logger.info(f"Synthesis complete: {len(synthesized_text)} characters generated")
+            logger.info(
+                f"Synthesis complete: {len(synthesized_text)} characters generated"
+            )
             return synthesized_text
 
         except Exception as e:
             logger.error(f"LLM synthesis failed: {e}")
             # Fallback to simple concatenation if synthesis fails
-            logger.warning("Falling back to simple concatenation due to synthesis error")
+            logger.warning(
+                "Falling back to simple concatenation due to synthesis error"
+            )
             return "Synthesis failed. Please check agent outputs above for detailed results."
 
     def _aggregate_parallel_results(self, state: OrchestratorState) -> str:
@@ -739,19 +827,24 @@ Final Answer:"""
         Note: Uses node_outputs instead of agent_outputs for reliability.
         """
         # Simple aggregation strategy - filter out system nodes
-        agent_results = {k: v for k, v in state.node_outputs.items()
-                        if k not in ['start', 'end'] and v != "Workflow initialized" and v != "Workflow completed"}
+        agent_results = {
+            k: v
+            for k, v in state.node_outputs.items()
+            if k not in ["start", "end"]
+            and v != "Workflow initialized"
+            and v != "Workflow completed"
+        }
 
         parallel_outputs = [
             output if isinstance(output, str) else str(output)
             for output in agent_results.values()
         ]
         return f"Aggregated {len(parallel_outputs)} parallel results"
-    
+
     def get_compiled_graph(self, graph_name: str) -> Optional[StateGraph]:
         """Get a compiled graph by name."""
         return self._compiled_graphs.get(graph_name)
-    
+
     def clear_cache(self) -> None:
         """Clear all compilation caches."""
         self._agent_cache.clear()
@@ -764,16 +857,16 @@ Final Answer:"""
 def compile_tot_graph(
     graph_spec: StateGraphSpec,
     agent_configs: List[AgentConfig],
-    agent_factory: Optional[AgentFactory] = None
+    agent_factory: Optional[AgentFactory] = None,
 ) -> StateGraph:
     """
     Convenience function to compile a ToT graph specification.
-    
+
     Args:
         graph_spec: The graph specification to compile
         agent_configs: Available agent configurations
         agent_factory: Optional custom agent factory
-        
+
     Returns:
         Compiled StateGraph ready for execution
     """
@@ -785,22 +878,22 @@ def compile_tot_graph(
 def compile_and_validate_graph(
     graph_spec: StateGraphSpec,
     agent_configs: List[AgentConfig],
-    agent_factory: Optional[AgentFactory] = None
+    agent_factory: Optional[AgentFactory] = None,
 ) -> Tuple[StateGraph, List[str]]:
     """
     Compile a graph specification with validation.
-    
+
     Args:
         graph_spec: The graph specification to compile
         agent_configs: Available agent configurations
         agent_factory: Optional custom agent factory
-        
+
     Returns:
         Tuple of (compiled_graph, validation_errors)
     """
     # Validate first
     validation_errors = graph_spec.validate()
-    
+
     # Compile if validation passes
     if not validation_errors:
         compiler = GraphCompiler(agent_factory)
@@ -811,8 +904,4 @@ def compile_and_validate_graph(
 
 
 # Export main classes and functions
-__all__ = [
-    "GraphCompiler",
-    "compile_tot_graph",
-    "compile_and_validate_graph"
-]
+__all__ = ["GraphCompiler", "compile_tot_graph", "compile_and_validate_graph"]

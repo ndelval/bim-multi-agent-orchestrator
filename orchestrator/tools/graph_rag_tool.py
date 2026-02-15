@@ -11,10 +11,12 @@ import logging
 from typing import List, Optional, Dict, Any
 
 from langchain_core.tools import StructuredTool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 logger = logging.getLogger(__name__)
+
+_BROAD_PATTERNS = {"all", "everything", "help", "*", "?", "any"}
 
 
 def _parse_list(value: Optional[str | List[str]]) -> Optional[List[str]]:
@@ -32,7 +34,7 @@ class GraphRAGInput(BaseModel):
     """Input schema for the GraphRAG lookup tool."""
 
     query: str = Field(
-        description="Natural language query to search for relevant documents."
+        description="Natural language query to search for relevant documents. Must be 3+ characters.",
     )
     tags: Optional[str] = Field(
         default=None,
@@ -48,8 +50,21 @@ class GraphRAGInput(BaseModel):
     )
     top_k: int = Field(
         default=5,
-        description="Maximum number of fragments to return.",
+        ge=1,
+        le=50,
+        description="Maximum number of fragments to return (1-50).",
     )
+
+    @field_validator("query", mode="before")
+    @classmethod
+    def validate_query(cls, v: Any) -> str:
+        """Reject empty or too-short queries."""
+        v = str(v).strip()
+        if not v:
+            raise ValueError("query cannot be empty")
+        if len(v) < 3:
+            raise ValueError(f"query must be at least 3 characters, got {len(v)}")
+        return v
 
 
 class GraphRAGTool:
@@ -94,6 +109,12 @@ class GraphRAGTool:
             user,
             run,
         )
+
+        if query.strip().lower() in _BROAD_PATTERNS:
+            logger.warning(
+                "graph_rag_lookup: query %r may be too broad; consider more specific terms",
+                query,
+            )
 
         try:
             top = int(top_k)
@@ -185,7 +206,17 @@ def create_graph_rag_tool(
         description=(
             "Retrieves fragments from technical documents using hybrid search "
             "(vector + lexical + graph) with re-ranking. "
-            "Returns a textual summary with fragments and citations."
+            "Returns a textual summary with fragments and citations.\n\n"
+            "Examples:\n"
+            "  graph_rag_lookup(query='IFC wall entity properties', tags='ifc,schema', top_k=3)\n"
+            "  graph_rag_lookup(query='safety compliance requirements', documents='doc_001')\n\n"
+            "Constraints:\n"
+            "- query (required): Specific search terms, 3+ characters\n"
+            "- tags (optional): Comma-separated filter tags\n"
+            "- documents (optional): Comma-separated document IDs to prioritize\n"
+            "- sections (optional): Comma-separated section IDs\n"
+            "- top_k (optional): 1-50, default 5\n\n"
+            "Avoid overly broad queries like 'everything' or 'all documents'."
         ),
         args_schema=GraphRAGInput,
     )

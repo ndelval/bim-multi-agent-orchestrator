@@ -60,6 +60,10 @@ class EventType(str, Enum):
     ERROR_RECOVERY = "error_recovery"
     FALLBACK_TRIGGERED = "fallback_triggered"
 
+    # Token cost tracking
+    TOKEN_USAGE = "token_usage"
+    BUDGET_WARNING = "budget_warning"
+
 
 @dataclass
 class ExecutionEvent:
@@ -74,7 +78,7 @@ class ExecutionEvent:
         return {
             "event_type": self.event_type.value,
             "timestamp": self.timestamp,
-            "data": self.data
+            "data": self.data,
         }
 
     def to_json(self) -> str:
@@ -118,9 +122,7 @@ class EventEmitter:
             logger.debug(f"Unregistered event callback: {callback.__name__}")
 
     def emit(
-        self,
-        event_type: EventType,
-        data: Optional[Dict[str, Any]] = None
+        self, event_type: EventType, data: Optional[Dict[str, Any]] = None
     ) -> None:
         """
         Emit an event to all registered callbacks.
@@ -132,15 +134,12 @@ class EventEmitter:
         if not self._enabled:
             return
 
-        event = ExecutionEvent(
-            event_type=event_type,
-            data=data or {}
-        )
+        event = ExecutionEvent(event_type=event_type, data=data or {})
 
         # Add to history
         self._event_history.append(event)
         if len(self._event_history) > self._max_history:
-            self._event_history = self._event_history[-self._max_history:]
+            self._event_history = self._event_history[-self._max_history :]
 
         # Notify callbacks
         for callback in self._callbacks:
@@ -149,9 +148,9 @@ class EventEmitter:
             except Exception as e:
                 logger.error(f"Error in event callback {callback.__name__}: {e}")
 
-    def get_history(self,
-                   event_type: Optional[EventType] = None,
-                   limit: Optional[int] = None) -> List[ExecutionEvent]:
+    def get_history(
+        self, event_type: Optional[EventType] = None, limit: Optional[int] = None
+    ) -> List[ExecutionEvent]:
         """
         Get event history, optionally filtered by type.
 
@@ -191,7 +190,7 @@ class EventEmitter:
         Args:
             filepath: Path to output file
         """
-        with open(filepath, 'w') as f:
+        with open(filepath, "w") as f:
             json.dump([e.to_dict() for e in self._event_history], f, indent=2)
 
 
@@ -215,115 +214,137 @@ def reset_event_emitter() -> None:
 
 # Convenience functions for emitting common events
 
+
 def emit_workflow_start(prompt: str, user_id: str) -> None:
     """Emit workflow start event."""
-    get_event_emitter().emit(EventType.WORKFLOW_START, {
-        "prompt": prompt,
-        "user_id": user_id
-    })
+    get_event_emitter().emit(
+        EventType.WORKFLOW_START, {"prompt": prompt, "user_id": user_id}
+    )
 
 
-def emit_router_decision(decision: str, confidence: str, rationale: str,
-                         latency: float, tokens: Optional[int] = None) -> None:
+def emit_router_decision(
+    decision: str,
+    confidence: str,
+    rationale: str,
+    latency: float,
+    tokens: Optional[int] = None,
+) -> None:
     """Emit router decision event."""
-    get_event_emitter().emit(EventType.ROUTER_DECISION, {
-        "decision": decision,
-        "confidence": confidence,
-        "rationale": rationale,
-        "latency": latency,
-        "tokens": tokens
-    })
+    get_event_emitter().emit(
+        EventType.ROUTER_DECISION,
+        {
+            "decision": decision,
+            "confidence": confidence,
+            "rationale": rationale,
+            "latency": latency,
+            "tokens": tokens,
+        },
+    )
 
 
 def emit_tot_generation(step: int, candidates: int, method: str) -> None:
     """Emit ToT thought generation event."""
-    get_event_emitter().emit(EventType.TOT_GENERATION, {
-        "step": step,
-        "candidates": candidates,
-        "method": method
-    })
+    get_event_emitter().emit(
+        EventType.TOT_GENERATION,
+        {"step": step, "candidates": candidates, "method": method},
+    )
 
 
 def emit_tot_evaluation(step: int, scores: List[float]) -> None:
     """Emit ToT evaluation event."""
-    get_event_emitter().emit(EventType.TOT_EVALUATION, {
-        "step": step,
-        "scores": scores,
-        "avg_score": sum(scores) / len(scores) if scores else 0,
-        "max_score": max(scores) if scores else 0
-    })
+    get_event_emitter().emit(
+        EventType.TOT_EVALUATION,
+        {
+            "step": step,
+            "scores": scores,
+            "avg_score": sum(scores) / len(scores) if scores else 0,
+            "max_score": max(scores) if scores else 0,
+        },
+    )
 
 
 def emit_tot_selection(step: int, kept: int, pruned: int) -> None:
     """Emit ToT selection event."""
-    get_event_emitter().emit(EventType.TOT_SELECTION, {
-        "step": step,
-        "kept": kept,
-        "pruned": pruned
-    })
+    get_event_emitter().emit(
+        EventType.TOT_SELECTION, {"step": step, "kept": kept, "pruned": pruned}
+    )
 
 
-def emit_planning_complete(method: str, quality_score: float,
-                          assignments: int, duration: float) -> None:
+def emit_planning_complete(
+    method: str, quality_score: float, assignments: int, duration: float
+) -> None:
     """Emit planning complete event."""
-    get_event_emitter().emit(EventType.PLANNING_COMPLETE, {
-        "method": method,
-        "quality_score": quality_score,
-        "assignments": assignments,
-        "duration": duration
-    })
+    get_event_emitter().emit(
+        EventType.PLANNING_COMPLETE,
+        {
+            "method": method,
+            "quality_score": quality_score,
+            "assignments": assignments,
+            "duration": duration,
+        },
+    )
 
 
 def emit_node_start(node_name: str, agent_name: str, tools: List[str]) -> None:
     """Emit node start event."""
-    get_event_emitter().emit(EventType.NODE_START, {
-        "node_name": node_name,
-        "agent_name": agent_name,
-        "tools": tools
-    })
+    get_event_emitter().emit(
+        EventType.NODE_START,
+        {"node_name": node_name, "agent_name": agent_name, "tools": tools},
+    )
 
 
-def emit_node_complete(node_name: str, agent_name: str,
-                       duration: float, output_length: int) -> None:
+def emit_node_complete(
+    node_name: str, agent_name: str, duration: float, output_length: int
+) -> None:
     """Emit node complete event."""
-    get_event_emitter().emit(EventType.NODE_COMPLETE, {
-        "node_name": node_name,
-        "agent_name": agent_name,
-        "duration": duration,
-        "output_length": output_length
-    })
+    get_event_emitter().emit(
+        EventType.NODE_COMPLETE,
+        {
+            "node_name": node_name,
+            "agent_name": agent_name,
+            "duration": duration,
+            "output_length": output_length,
+        },
+    )
 
 
 def emit_tool_invocation(tool_name: str, agent_name: str, args: Dict[str, Any]) -> None:
     """Emit tool invocation event."""
-    get_event_emitter().emit(EventType.TOOL_INVOCATION, {
-        "tool_name": tool_name,
-        "agent_name": agent_name,
-        "args": args
-    })
+    get_event_emitter().emit(
+        EventType.TOOL_INVOCATION,
+        {"tool_name": tool_name, "agent_name": agent_name, "args": args},
+    )
 
 
-def emit_tool_complete(tool_name: str, agent_name: str,
-                      results_count: int, duration: float) -> None:
+def emit_tool_complete(
+    tool_name: str, agent_name: str, results_count: int, duration: float
+) -> None:
     """Emit tool complete event."""
-    get_event_emitter().emit(EventType.TOOL_COMPLETE, {
-        "tool_name": tool_name,
-        "agent_name": agent_name,
-        "results_count": results_count,
-        "duration": duration
-    })
+    get_event_emitter().emit(
+        EventType.TOOL_COMPLETE,
+        {
+            "tool_name": tool_name,
+            "agent_name": agent_name,
+            "results_count": results_count,
+            "duration": duration,
+        },
+    )
 
 
 def emit_agent_start(agent_name: str, status: str) -> None:
     """Emit agent start event (compat helper for legacy CLI)."""
-    get_event_emitter().emit(EventType.AGENT_START, {
-        "agent_name": agent_name,
-        "status": status,
-    })
+    get_event_emitter().emit(
+        EventType.AGENT_START,
+        {
+            "agent_name": agent_name,
+            "status": status,
+        },
+    )
 
 
-def emit_agent_progress(agent_name: str, message: str,
-                        progress: Optional[float] = None) -> None:
+def emit_agent_progress(
+    agent_name: str, message: str, progress: Optional[float] = None
+) -> None:
     """Emit agent progress update."""
     payload = {
         "agent_name": agent_name,
@@ -336,31 +357,75 @@ def emit_agent_progress(agent_name: str, message: str,
 
 def emit_agent_complete(agent_name: str, summary: str) -> None:
     """Emit agent completion event."""
-    get_event_emitter().emit(EventType.AGENT_COMPLETE, {
-        "agent_name": agent_name,
-        "summary": summary,
-    })
+    get_event_emitter().emit(
+        EventType.AGENT_COMPLETE,
+        {
+            "agent_name": agent_name,
+            "summary": summary,
+        },
+    )
 
 
 def emit_final_answer(answer: str) -> None:
     """Emit final answer event for UI display."""
-    get_event_emitter().emit(EventType.FINAL_ANSWER, {
-        "answer": answer,
-    })
+    get_event_emitter().emit(
+        EventType.FINAL_ANSWER,
+        {
+            "answer": answer,
+        },
+    )
 
 
 def emit_error_recovery(error_type: str, recovery_path: str, impact: str) -> None:
     """Emit error recovery event."""
-    get_event_emitter().emit(EventType.ERROR_RECOVERY, {
-        "error_type": error_type,
-        "recovery_path": recovery_path,
-        "impact": impact
-    })
+    get_event_emitter().emit(
+        EventType.ERROR_RECOVERY,
+        {"error_type": error_type, "recovery_path": recovery_path, "impact": impact},
+    )
 
 
 def emit_workflow_complete(duration: float, success: bool) -> None:
     """Emit workflow complete event."""
-    get_event_emitter().emit(EventType.WORKFLOW_COMPLETE, {
-        "duration": duration,
-        "success": success
-    })
+    get_event_emitter().emit(
+        EventType.WORKFLOW_COMPLETE, {"duration": duration, "success": success}
+    )
+
+
+def emit_token_usage(
+    agent_name: str,
+    input_tokens: int,
+    output_tokens: int,
+    reasoning_tokens: int,
+    total_tokens: int,
+    estimated_cost: float,
+    model: str,
+) -> None:
+    """Emit token usage event after an agent LLM call."""
+    get_event_emitter().emit(
+        EventType.TOKEN_USAGE,
+        {
+            "agent_name": agent_name,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "reasoning_tokens": reasoning_tokens,
+            "total_tokens": total_tokens,
+            "estimated_cost": estimated_cost,
+            "model": model,
+        },
+    )
+
+
+def emit_budget_warning(
+    agent_name: str, usage_pct: float, budget_type: str, current: float, limit: float
+) -> None:
+    """Emit budget warning event when usage crosses alert threshold."""
+    get_event_emitter().emit(
+        EventType.BUDGET_WARNING,
+        {
+            "agent_name": agent_name,
+            "usage_pct": usage_pct,
+            "budget_type": budget_type,
+            "current": current,
+            "limit": limit,
+        },
+    )

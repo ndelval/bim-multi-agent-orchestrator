@@ -5,6 +5,7 @@ This module provides clean imports for LangChain/LangGraph components
 """
 
 import logging
+import os
 from typing import Optional, Any, Dict, List, Union, TYPE_CHECKING, Annotated
 from dataclasses import dataclass, field
 
@@ -49,6 +50,85 @@ def merge_lists(left: List, right: List) -> List:
         Concatenated list
     """
     return left + right
+
+
+# ---------------------------------------------------------------------------
+# Context windowing constants and helpers (BP-COST-07, BP-COST-08)
+# ---------------------------------------------------------------------------
+
+MSG_WINDOW_SIZE: int = int(os.environ.get("ORCHESTRATOR_MSG_WINDOW_SIZE", "20"))
+SUMMARY_PREFIX: str = "SUMMARY OF PRIOR CONTEXT:"
+
+_SUMMARIZER_INSTANCE = None  # lazy singleton
+
+
+def _get_summarizer():
+    """Return a lazily-initialised Summarizer singleton."""
+    global _SUMMARIZER_INSTANCE
+    if _SUMMARIZER_INSTANCE is None:
+        from orchestrator.memory.summarizer import Summarizer
+
+        _SUMMARIZER_INSTANCE = Summarizer()
+    return _SUMMARIZER_INSTANCE
+
+
+def summarizing_add_messages(
+    left: List,
+    right: List,
+) -> List:
+    """Custom LangGraph reducer: add_messages + sliding window with summarization.
+
+    Delegates to LangGraph's ``add_messages`` for merge semantics (ID-based
+    deduplication, concurrent-write safety), then compresses old messages when
+    the combined list exceeds ``MSG_WINDOW_SIZE``.
+
+    Fallback behaviour: if the summarisation LLM call fails for any reason,
+    fall back to simple truncation (keep the last N messages) so graph
+    execution is never interrupted.
+    """
+    # 1. Delegate to the original LangGraph add_messages reducer
+    if add_messages is None:
+        # LangChain not available — simple concatenation fallback
+        merged = list(left or []) + list(right or [])
+    else:
+        merged = add_messages(left, right)
+
+    # 2. Under threshold → nothing to do
+    if len(merged) <= MSG_WINDOW_SIZE:
+        return merged
+
+    # 3. Split into old (to summarise) and recent (to keep raw)
+    recent = merged[-MSG_WINDOW_SIZE:]
+    old = merged[:-MSG_WINDOW_SIZE]
+
+    # 4. Summarise the old messages
+    try:
+        summarizer = _get_summarizer()
+        summary = summarizer.summarize_old_messages(old)
+    except Exception:
+        logger.warning(
+            "Message summarization failed; falling back to simple truncation",
+            exc_info=True,
+        )
+        return list(recent)
+
+    if not summary:
+        return list(recent)
+
+    # 5. Build the windowed message list
+    #    Import here to handle the LANGCHAIN_AVAILABLE=False case gracefully
+    try:
+        from langchain_core.messages import HumanMessage as _HM, AIMessage as _AM
+
+        summary_messages = [
+            _HM(content=f"{SUMMARY_PREFIX} {summary}"),
+            _AM(content="Understood, continuing with prior context noted."),
+        ]
+    except ImportError:
+        # Cannot create typed messages — return raw truncation
+        return list(recent)
+
+    return summary_messages + list(recent)
 
 
 # Core LangChain imports
@@ -120,7 +200,9 @@ class OrchestratorState:
     """
 
     # Input/Output
-    messages: Annotated[List[BaseMessage], add_messages] = field(default_factory=list)
+    messages: Annotated[List[BaseMessage], summarizing_add_messages] = field(
+        default_factory=list
+    )
     input_prompt: str = (
         ""  # Immutable user input (read-only) - SAFE: never written by nodes
     )
@@ -309,7 +391,9 @@ class LangChainAgent:
         backstory: str,
         instructions: str = "",
         llm: Optional[str] = None,
+        llm_provider: str = "openai",
         tools: Optional[List[BaseTool]] = None,
+        llm_kwargs: Optional[Dict[str, Any]] = None,
         **kwargs,
     ):
         self.name = name
@@ -318,7 +402,9 @@ class LangChainAgent:
         self.backstory = backstory
         self.instructions = instructions
         self.llm_name = llm or "gpt-4o-mini"
+        self.llm_provider = llm_provider
         self.tools = tools or []
+        self.llm_kwargs = llm_kwargs or {}
         self.kwargs = kwargs
 
         # Initialize LangChain components
@@ -329,20 +415,27 @@ class LangChainAgent:
         if not LANGCHAIN_AVAILABLE:
             raise RuntimeError("LangChain components not available")
 
-        # Create LLM
-        self.llm = ChatOpenAI(model=self.llm_name, temperature=0.1)
+        # Create LLM via provider-agnostic factory
+        from ..core.llm_factory import LLMFactory
 
-        # Create system prompt combining role, goal, backstory, and instructions
-        system_prompt = f"""You are {self.name}, a {self.role}.
+        self.llm = LLMFactory.create(
+            provider=self.llm_provider,
+            model=self.llm_name,
+            temperature=0.1,
+            **self.llm_kwargs,
+        )
 
-GOAL: {self.goal}
+        # Create system prompt from centralized template (BP-MCP-05)
+        from ..prompts import get_prompt
 
-BACKSTORY: {self.backstory}
-
-INSTRUCTIONS:
-{self.instructions}
-
-Always provide clear, actionable responses based on your role and expertise."""
+        system_prompt = get_prompt(
+            "system.agent",
+            name=self.name,
+            role=self.role,
+            goal=self.goal,
+            backstory=self.backstory,
+            instructions=self.instructions,
+        )
 
         # Create prompt template
         self.prompt = ChatPromptTemplate.from_messages(
@@ -361,9 +454,17 @@ Always provide clear, actionable responses based on your role and expertise."""
             self.agent = self.prompt | self.llm | StrOutputParser()
 
     def execute(
-        self, task_description: str, context: Optional[Dict[str, Any]] = None
+        self,
+        task_description: str,
+        context: Optional[Dict[str, Any]] = None,
+        callbacks: Optional[List] = None,
     ) -> str:
         """Execute task using LangChain agent with detailed logging.
+
+        Args:
+            task_description: The task to execute
+            context: Optional execution context
+            callbacks: Optional LangChain callbacks (e.g. for token tracking)
 
         Raises:
             AgentExecutionError: If the agent execution fails.
@@ -390,6 +491,9 @@ Always provide clear, actionable responses based on your role and expertise."""
                 tool_names or "none",
             )
 
+            # Build invoke config for callbacks (token tracking, etc.)
+            invoke_config = {"callbacks": callbacks} if callbacks else None
+
             # Execute agent
             if hasattr(self.agent, "invoke"):
                 # For StateGraph-based agents
@@ -398,16 +502,19 @@ Always provide clear, actionable responses based on your role and expertise."""
                         {
                             "messages": context["messages"]
                             + [HumanMessage(content=task_description)]
-                        }
+                        },
+                        config=invoke_config,
                     )
                 else:
                     result = self.agent.invoke(
-                        {"messages": [HumanMessage(content=task_description)]}
+                        {"messages": [HumanMessage(content=task_description)]},
+                        config=invoke_config,
                     )
             else:
                 # For simple chains
                 result = self.agent.invoke(
-                    {"messages": [HumanMessage(content=task_description)]}
+                    {"messages": [HumanMessage(content=task_description)]},
+                    config=invoke_config,
                 )
 
             # Extract string response

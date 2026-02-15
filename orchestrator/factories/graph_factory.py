@@ -23,7 +23,7 @@ from ..integrations.langchain_integration import (
     is_available,
 )
 from ..core.config import AgentConfig, TaskConfig, OrchestratorConfig
-from ..core.exceptions import GraphCreationError
+from ..core.exceptions import GraphCreationError, BudgetExceededError
 from .agent_factory import AgentFactory
 from .route_classifier import RouteClassifier, RouteDecision
 from .routing_config import get_routing_strategy, RoutingStrategy
@@ -32,6 +32,7 @@ from ..cli.events import (
     emit_node_complete,
     emit_tool_invocation,
     emit_tool_complete,
+    emit_token_usage,
 )
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,7 @@ class GraphFactory:
         agent_factory: Optional[AgentFactory] = None,
         route_classifier: Optional[RouteClassifier] = None,
         routing_strategy: Optional[RoutingStrategy] = None,
+        token_tracker: Optional[Any] = None,
     ):
         """
         Initialize graph factory with agent factory and routing components.
@@ -53,6 +55,7 @@ class GraphFactory:
             agent_factory: Optional custom agent factory
             route_classifier: Optional custom route classifier
             routing_strategy: Optional custom routing strategy
+            token_tracker: Optional TokenTracker for per-agent cost tracking
         """
         if not is_available():
             raise GraphCreationError(
@@ -62,6 +65,7 @@ class GraphFactory:
         self.agent_factory = agent_factory or AgentFactory()
         self.route_classifier = route_classifier or RouteClassifier()
         self.routing_strategy = routing_strategy or get_routing_strategy("default")
+        self.token_tracker = token_tracker
         self._created_graphs: Dict[str, StateGraph] = {}
         self._dynamic_tools: Dict[str, Any] = {}  # Registry for runtime tools
         logger.info("GraphFactory initialized with LangChain StateGraph support")
@@ -145,6 +149,12 @@ class GraphFactory:
 
             # Create routing logic
             if routing_agent:
+                # Ensure OpenAI router always returns valid JSON (BP-STRUCT-04)
+                if routing_agent.llm_provider == "openai":
+                    routing_agent.llm_kwargs.setdefault(
+                        "response_format", {"type": "json_object"}
+                    )
+
                 router = self._create_agent_from_config(routing_agent)
                 router_func = self._create_router_agent_function(router)
                 workflow.add_node("router", router_func)
@@ -275,13 +285,39 @@ class GraphFactory:
                     tools=config.tools or [],
                 )
 
+                # Create per-call token tracking callback
+                callbacks = None
+                token_handler = None
+                if self.token_tracker and getattr(self.token_tracker, "enabled", False):
+                    token_handler = self.token_tracker.create_callback(
+                        agent_name=config.name,
+                        model=getattr(agent, "llm_name", ""),
+                    )
+                    callbacks = [token_handler]
+
                 # Get task description
                 task_description = state.input_prompt
                 if state.memory_context:
                     task_description = f"{state.memory_context}\n\n{task_description}"
 
                 # Execute agent
-                result = agent.execute(task_description, {"state": asdict(state)})
+                result = agent.execute(
+                    task_description, {"state": asdict(state)}, callbacks=callbacks
+                )
+
+                # Record token usage and check budgets
+                if self.token_tracker and token_handler is not None:
+                    self.token_tracker.record(config.name, token_handler.usage)
+                    emit_token_usage(
+                        agent_name=config.name,
+                        input_tokens=token_handler.usage.input_tokens,
+                        output_tokens=token_handler.usage.output_tokens,
+                        reasoning_tokens=token_handler.usage.reasoning_tokens,
+                        total_tokens=token_handler.usage.total_tokens,
+                        estimated_cost=token_handler.usage.estimated_cost,
+                        model=token_handler.usage.model,
+                    )
+                    self.token_tracker.check_budgets(config.name)
 
                 # Emit node complete event
                 duration = time.time() - start_time
@@ -304,6 +340,8 @@ class GraphFactory:
                     "messages": [AIMessage(content=result)],  # add_messages will append
                 }
 
+            except BudgetExceededError:
+                raise  # Propagate without catching to halt the workflow
             except Exception as e:
                 logger.error(f"Agent {config.name} execution failed: {e}")
 
@@ -344,7 +382,9 @@ class GraphFactory:
                 logger.info("[Router] Evaluating prompt: %s", state.input_prompt)
 
                 # Use RouteClassifier for keyword-based routing
-                decision = self.route_classifier.classify_by_keywords(state.input_prompt)
+                decision = self.route_classifier.classify_by_keywords(
+                    state.input_prompt
+                )
 
                 logger.info(
                     "Router selected route: %s (source: %s)",
@@ -417,6 +457,9 @@ class GraphFactory:
         """
         Create a router function using an LLM agent with RouteClassifier.
 
+        Includes single-retry logic when all parsing strategies fail
+        (BP-PROMPT-05).
+
         Returns:
             Callable router function that returns only modified state fields
         """
@@ -438,6 +481,26 @@ class GraphFactory:
                 # Use RouteClassifier to parse LLM response
                 decision = self.route_classifier.classify_from_llm_response(result)
 
+                # Retry once if all parsing strategies failed (BP-PROMPT-05)
+                if decision.source == "default" and (
+                    decision.confidence is None or decision.confidence <= 0.3
+                ):
+                    logger.info(
+                        "[RouterLLM] All parsing failed, retrying with stricter prompt"
+                    )
+                    retry_prompt = (
+                        f"{routing_prompt}\n\n"
+                        "IMPORTANT: Respond ONLY with valid JSON, no other text.\n"
+                        'Example: {"route": "quick", "confidence": 0.9, '
+                        '"reasoning": "Simple greeting"}'
+                    )
+                    retry_result = router_agent.execute(retry_prompt)
+                    retry_decision = self.route_classifier.classify_from_llm_response(
+                        retry_result
+                    )
+                    if retry_decision.source != "default":
+                        decision = retry_decision
+
                 logger.info(
                     "Router agent selected route: %s (source: %s)",
                     decision.route,
@@ -453,7 +516,9 @@ class GraphFactory:
                         "reason": decision.reason,
                         "agent_reasoning": result,
                     },
-                    "messages": [AIMessage(content=f"Router LLM selected: {decision.route}")],
+                    "messages": [
+                        AIMessage(content=f"Router LLM selected: {decision.route}")
+                    ],
                 }
 
             except Exception as e:
@@ -472,26 +537,18 @@ class GraphFactory:
         """
         Build routing prompt for LLM router agent.
 
+        Uses centralized prompt template (BP-MCP-05, BP-PROMPT-08) with
+        XML tag structure (BP-STRUCT-02/03) and few-shot examples (BP-PROMPT-06).
+
         Args:
             user_request: The user's input prompt
 
         Returns:
             Formatted routing prompt
         """
-        return f"""
-        Analyze this user request and decide the best route:
+        from ..prompts import get_prompt
 
-        USER REQUEST: {user_request}
-
-        AVAILABLE ROUTES:
-        - quick: Simple responses, greetings
-        - research: Information gathering, web search
-        - analysis: Deep analysis, reasoning
-        - planning: Complex tasks requiring ToT planning + multi-agent execution
-        - standards: Compliance, regulations
-
-        Respond with JSON: {{"route": "route_name", "confidence": float, "reasoning": "why this route"}}
-        """
+        return get_prompt("routing.classify", user_request=user_request)
 
     def _create_simple_router_function(self) -> Callable:
         """Create a simple keyword-based router."""

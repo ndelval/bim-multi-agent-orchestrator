@@ -72,12 +72,15 @@ class TestParallelGroupValidation:
     def test_valid_references(self):
         """Test validation with all valid references."""
         graph_spec = StateGraphSpec(name="test_graph")
-        graph_spec.add_node(GraphNodeSpec(name="research", type=NodeType.AGENT, agent="Researcher"))
-        graph_spec.add_node(GraphNodeSpec(name="analysis", type=NodeType.AGENT, agent="Analyst"))
+        graph_spec.add_node(
+            GraphNodeSpec(name="research", type=NodeType.AGENT, agent="Researcher")
+        )
+        graph_spec.add_node(
+            GraphNodeSpec(name="analysis", type=NodeType.AGENT, agent="Analyst")
+        )
 
         parallel_group = ParallelGroup(
-            group_id="parallel_work",
-            nodes=["research", "analysis"]
+            group_id="parallel_work", nodes=["research", "analysis"]
         )
         graph_spec.add_parallel_group(parallel_group)
 
@@ -88,12 +91,16 @@ class TestParallelGroupValidation:
     def test_auto_correct_task_suffix(self):
         """Test auto-correction of _task suffix."""
         graph_spec = StateGraphSpec(name="test_graph")
-        graph_spec.add_node(GraphNodeSpec(name="research", type=NodeType.AGENT, agent="Researcher"))
-        graph_spec.add_node(GraphNodeSpec(name="analysis", type=NodeType.AGENT, agent="Analyst"))
+        graph_spec.add_node(
+            GraphNodeSpec(name="research", type=NodeType.AGENT, agent="Researcher")
+        )
+        graph_spec.add_node(
+            GraphNodeSpec(name="analysis", type=NodeType.AGENT, agent="Analyst")
+        )
 
         parallel_group = ParallelGroup(
             group_id="parallel_work",
-            nodes=["research_task", "analysis_task"]  # Invalid references
+            nodes=["research_task", "analysis_task"],  # Invalid references
         )
         graph_spec.add_parallel_group(parallel_group)
 
@@ -104,11 +111,12 @@ class TestParallelGroupValidation:
     def test_remove_invalid_reference(self):
         """Test removal of invalid references with no close match."""
         graph_spec = StateGraphSpec(name="test_graph")
-        graph_spec.add_node(GraphNodeSpec(name="research", type=NodeType.AGENT, agent="Researcher"))
+        graph_spec.add_node(
+            GraphNodeSpec(name="research", type=NodeType.AGENT, agent="Researcher")
+        )
 
         parallel_group = ParallelGroup(
-            group_id="parallel_work",
-            nodes=["research", "nonexistent_node"]
+            group_id="parallel_work", nodes=["research", "nonexistent_node"]
         )
         graph_spec.add_parallel_group(parallel_group)
 
@@ -119,12 +127,16 @@ class TestParallelGroupValidation:
     def test_mixed_valid_invalid_references(self):
         """Test validation with mix of valid, correctable, and invalid references."""
         graph_spec = StateGraphSpec(name="test_graph")
-        graph_spec.add_node(GraphNodeSpec(name="research", type=NodeType.AGENT, agent="Researcher"))
-        graph_spec.add_node(GraphNodeSpec(name="analysis", type=NodeType.AGENT, agent="Analyst"))
+        graph_spec.add_node(
+            GraphNodeSpec(name="research", type=NodeType.AGENT, agent="Researcher")
+        )
+        graph_spec.add_node(
+            GraphNodeSpec(name="analysis", type=NodeType.AGENT, agent="Analyst")
+        )
 
         parallel_group = ParallelGroup(
             group_id="parallel_work",
-            nodes=["research", "analysis_task", "invalid_node"]
+            nodes=["research", "analysis_task", "invalid_node"],
         )
         graph_spec.add_parallel_group(parallel_group)
 
@@ -142,15 +154,27 @@ class TestAutoNodeCreationDisabled:
         existing_nodes = []
 
         agent_catalog = [
-            AgentConfig(name="Researcher", role="Research Specialist", goal="Gather information"),
-            AgentConfig(name="Analyst", role="Data Analyst", goal="Analyze data"),
+            AgentConfig(
+                name="Researcher",
+                role="Research Specialist",
+                goal="Gather information",
+                backstory="Expert researcher",
+                instructions="Research thoroughly",
+            ),
+            AgentConfig(
+                name="Analyst",
+                role="Data Analyst",
+                goal="Analyze data",
+                backstory="Experienced analyst",
+                instructions="Analyze carefully",
+            ),
         ]
 
         # Call with non-existent node references
         _create_nodes_from_parallel_group(
             parallel_nodes=["research_task", "analysis_task"],
             agent_catalog=agent_catalog,
-            existing_nodes=existing_nodes
+            existing_nodes=existing_nodes,
         )
 
         # Should NOT create nodes
@@ -162,14 +186,18 @@ class TestAutoNodeCreationDisabled:
             GraphNodeSpec(name="research", type=NodeType.AGENT, agent="Researcher")
         ]
         agent_catalog = [
-            AgentConfig(name="Researcher", role="Research Specialist", goal="Gather information")
+            AgentConfig(
+                name="Researcher",
+                role="Research Specialist",
+                goal="Gather information",
+                backstory="Expert researcher",
+                instructions="Research thoroughly",
+            )
         ]
-
-        # Call with mix of existing and non-existing
         _create_nodes_from_parallel_group(
             parallel_nodes=["research", "nonexistent"],
             agent_catalog=agent_catalog,
-            existing_nodes=existing_nodes
+            existing_nodes=existing_nodes,
         )
 
         # Should not modify existing_nodes
@@ -186,13 +214,15 @@ class TestAutoFixGraph:
 
         # Add nodes
         graph_spec.add_node(GraphNodeSpec(name="start", type=NodeType.START))
-        graph_spec.add_node(GraphNodeSpec(name="research", type=NodeType.AGENT, agent="Researcher"))
+        graph_spec.add_node(
+            GraphNodeSpec(name="research", type=NodeType.AGENT, agent="Researcher")
+        )
         graph_spec.add_node(GraphNodeSpec(name="end", type=NodeType.END))
 
         # Add parallel group with correctable reference
         parallel_group = ParallelGroup(
             group_id="parallel_work",
-            nodes=["research_task"]  # Will be auto-corrected to "research"
+            nodes=["research_task"],  # Will be auto-corrected to "research"
         )
         graph_spec.add_parallel_group(parallel_group)
 
@@ -220,21 +250,31 @@ class TestPromptExampleConsistency:
 
         # Create minimal task
         agent_catalog = [
-            AgentConfig(name="Researcher", role="Research Specialist", goal="Gather information")
+            AgentConfig(
+                name="Researcher",
+                role="Research Specialist",
+                goal="Gather information",
+                backstory="Expert researcher",
+                instructions="Research thoroughly",
+            )
         ]
         task = GraphPlanningTask(
             problem_statement="Test problem",
             agent_catalog=agent_catalog,
             max_steps=3,
-            settings=None
+            settings=None,
         )
 
         # Get prompt
         prompt = task._base_graph_prompt("Test problem")
 
         # Verify examples don't contain "_task" suffix
-        assert "research_task" not in prompt, "Prompt should not contain 'research_task'"
-        assert "analysis_task" not in prompt, "Prompt should not contain 'analysis_task'"
+        assert (
+            "research_task" not in prompt
+        ), "Prompt should not contain 'research_task'"
+        assert (
+            "analysis_task" not in prompt
+        ), "Prompt should not contain 'analysis_task'"
 
         # Verify correct examples are present
         assert '"name":"research"' in prompt or '"name": "research"' in prompt

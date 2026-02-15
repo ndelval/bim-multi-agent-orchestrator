@@ -63,7 +63,18 @@ class BaseAgentTemplate(ABC):
         try:
             # Extract parameters
             llm = kwargs.get("llm", config.llm or "gpt-4o-mini")
+            llm_provider = kwargs.get(
+                "llm_provider", getattr(config, "llm_provider", "openai")
+            )
             tools = kwargs.get("tools") or self._resolve_tools(config.tools)
+
+            # BP-TOOL-03: Apply per-agent tool whitelist
+            allowed = getattr(config, "allowed_tools", None)
+            if allowed is not None:
+                tools = self._filter_tools_by_whitelist(tools, allowed, config.name)
+
+            # Collect LLM kwargs (e.g. response_format)
+            llm_kwargs = getattr(config, "llm_kwargs", {}) or {}
 
             # Create LangChain agent directly
             agent = Agent(
@@ -73,7 +84,9 @@ class BaseAgentTemplate(ABC):
                 backstory=config.backstory,
                 instructions=config.instructions or "",
                 llm=llm,
+                llm_provider=llm_provider,
                 tools=tools,
+                llm_kwargs=llm_kwargs,
             )
             logger.info(f"Created LangChain agent: {config.name}")
             return agent
@@ -134,6 +147,66 @@ class BaseAgentTemplate(ABC):
                 logger.debug(f"Unknown tool name: {item}")
 
         return tools
+
+    @staticmethod
+    def _filter_tools_by_whitelist(
+        tools: List[Any],
+        allowed_tools: Optional[List[str]],
+        agent_name: str = "",
+    ) -> List[Any]:
+        """Filter resolved tools against an optional whitelist.
+
+        When allowed_tools is None, all tools pass through (no filtering).
+        When allowed_tools is an empty list, all tools are removed.
+        When allowed_tools contains names, only tools whose resolved name
+        appears in the list are kept.
+
+        Args:
+            tools: List of resolved tool instances (BaseTool or wrapped callables)
+            allowed_tools: Optional list of permitted tool names, or None
+            agent_name: Agent name for log messages
+
+        Returns:
+            Filtered list of tools
+        """
+        if allowed_tools is None:
+            return tools
+
+        allowed_set = set(allowed_tools)
+        filtered = []
+
+        for tool in tools:
+            tool_name = getattr(tool, "name", getattr(tool, "__name__", str(tool)))
+            if tool_name in allowed_set:
+                filtered.append(tool)
+            else:
+                logger.info(
+                    "Agent '%s': tool '%s' filtered out by allowed_tools whitelist",
+                    agent_name,
+                    tool_name,
+                )
+
+        # Warn if whitelist entries matched zero tools (likely config typo)
+        resolved_names = {
+            getattr(t, "name", getattr(t, "__name__", str(t))) for t in tools
+        }
+        unmatched = allowed_set - resolved_names
+        if unmatched:
+            logger.warning(
+                "Agent '%s': allowed_tools entries %s did not match any resolved tool. "
+                "Available tool names: %s",
+                agent_name,
+                sorted(unmatched),
+                sorted(resolved_names),
+            )
+
+        logger.debug(
+            "Agent '%s': tool whitelist applied — %d/%d tools kept",
+            agent_name,
+            len(filtered),
+            len(tools),
+        )
+        return filtered
 
     @abstractmethod
     def get_default_config(self) -> AgentConfig:
@@ -196,7 +269,23 @@ class ResearcherAgentTemplate(BaseAgentTemplate):
             role="Web Research Specialist",
             goal="Gather up‑to‑date, sourced information",
             backstory="Expert in web research and summarization.",
-            instructions="Use web search to collect reliable, relevant information with sources.",
+            instructions=(
+                "Use web search to collect reliable, relevant information with sources.\n\n"
+                "<examples>\n"
+                'User: "What are the latest trends in BIM automation?"\n'
+                "Response:\n"
+                "## Key Findings\n"
+                "1. **OpenBIM adoption** — IFC 4.3 standard gaining traction across Europe\n"
+                "2. **AI-driven clash detection** — ML models reducing manual review by 40%\n\n"
+                "**Sources**: [1] buildingSMART (2024), [2] Autodesk Research Blog\n\n"
+                'User: "Find information about IFC schema entities for walls"\n'
+                "Response:\n"
+                "## Key Findings\n"
+                "1. **IfcWall / IfcWallStandardCase** — Represents wall elements with material layers\n"
+                "2. **IfcWallType** — Defines reusable wall type definitions\n\n"
+                "**Sources**: [1] IFC 4.3 Documentation, buildingSMART\n"
+                "</examples>"
+            ),
             tools=["duckduckgo"],
         )
 
@@ -220,7 +309,27 @@ class PlannerAgentTemplate(BaseAgentTemplate):
             backstory="You create pragmatic plans that balance speed and quality.",
             instructions=(
                 "Propose a concise plan with steps, owners, and acceptance criteria. "
-                "Prefer parallelizable steps where safe."
+                "Prefer parallelizable steps where safe.\n\n"
+                "<examples>\n"
+                'User: "Plan a market analysis for sustainable construction materials"\n'
+                "Response:\n"
+                "## Plan\n"
+                "1. **Research phase** (Researcher) — Gather data on sustainable materials market\n"
+                "   - Acceptance: 5+ sourced data points\n"
+                "2. **Analysis phase** (Analyst) — Compare cost-benefit across materials\n"
+                "   - Acceptance: Ranked comparison table\n"
+                "3. **Report phase** (Writer) — Executive summary with recommendations\n"
+                "   - Acceptance: 1-page summary\n\n"
+                'User: "Create a validation pipeline for IFC models"\n'
+                "Response:\n"
+                "## Plan\n"
+                "1. **Schema check** (Implementer) — Validate IFC structure against spec\n"
+                "   - Acceptance: Pass/fail with error list\n"
+                "2. **Clash detection** (Researcher + Implementer, parallel) — Identify spatial conflicts\n"
+                "   - Acceptance: Conflict report with coordinates\n"
+                "3. **Summary** (Writer) — Consolidate findings\n"
+                "   - Acceptance: Actionable report\n"
+                "</examples>"
             ),
             tools=[],
         )
@@ -290,7 +399,19 @@ class WriterAgentTemplate(BaseAgentTemplate):
             goal="Produce a crisp executive summary",
             backstory="You synthesize complex outputs into clear narratives.",
             instructions=(
-                "Create a concise report: objective, approach, key findings, limitations, next steps."
+                "Create a concise report: objective, approach, key findings, limitations, next steps.\n\n"
+                "<examples>\n"
+                'User: "Summarize the research and analysis results"\n'
+                "Response:\n"
+                "## Executive Summary\n"
+                "**Objective**: Evaluate sustainable construction materials for cost-effectiveness\n"
+                "**Approach**: Web research + comparative analysis across 5 material categories\n"
+                "**Key Findings**:\n"
+                "1. Cross-laminated timber offers 30% lower carbon footprint vs. steel\n"
+                "2. Recycled concrete aggregate reduces costs by 15%\n"
+                "**Limitations**: Data limited to European markets\n"
+                "**Next Steps**: Pilot study with local suppliers\n"
+                "</examples>"
             ),
             tools=[],
         )

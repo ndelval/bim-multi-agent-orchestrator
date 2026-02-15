@@ -70,6 +70,16 @@ class MemoryConfig:
 
 
 @dataclass
+class CostConfig:
+    """Configuration for token cost tracking and budget enforcement."""
+
+    max_tokens_per_task: Optional[int] = None  # Per-agent token limit
+    max_cost_per_run: Optional[float] = None  # Per-run USD cost limit
+    alert_threshold_pct: float = 0.8  # Emit warning at this fraction of limit
+    enabled: bool = True
+
+
+@dataclass
 class AgentConfig:
     """Configuration for individual agents."""
 
@@ -83,9 +93,16 @@ class AgentConfig:
     )  # PRIORITY 3 FIX: Support both strings and callables
     enabled: bool = True
     llm: Optional[str] = None  # LLM model identifier (e.g., "gpt-4o-mini")
+    llm_provider: str = "openai"  # LLM provider ("openai", "anthropic", "cohere")
     mcp_servers: List[Any] = field(
         default_factory=list
     )  # MCP server configurations (MCPServerConfig instances)
+    allowed_tools: Optional[List[str]] = (
+        None  # BP-TOOL-03: Tool whitelist; None = all tools allowed
+    )
+    llm_kwargs: Dict[str, Any] = field(
+        default_factory=dict
+    )  # Extra kwargs forwarded to LLMFactory.create() (e.g. response_format)
 
 
 @dataclass
@@ -127,11 +144,14 @@ class OrchestratorConfig:
     custom_config: Optional[Dict[str, Any]] = (
         None  # Custom configuration for extensions
     )
+    cost: Optional[CostConfig] = None  # Token cost tracking and budget config
 
     def __post_init__(self):
-        """Initialize default memory config if not provided."""
+        """Initialize default memory and cost config if not provided."""
         if self.memory is None:
             self.memory = MemoryConfig()
+        if self.cost is None:
+            self.cost = CostConfig()
 
     @classmethod
     def from_yaml(cls, yaml_path: Union[str, Path]) -> "OrchestratorConfig":
@@ -184,6 +204,11 @@ class OrchestratorConfig:
                     config=memory_data.get("config", {}),
                 )
 
+            # Parse cost config
+            cost = None
+            if "cost" in data:
+                cost = CostConfig(**data["cost"])
+
             return cls(
                 name=data.get("name", "orchestrator"),
                 process=data.get("process", "sequential"),
@@ -191,6 +216,7 @@ class OrchestratorConfig:
                 tasks=tasks,
                 memory=memory,
                 verbose=data.get("verbose", False),
+                cost=cost,
             )
         except Exception as e:
             raise ConfigurationError(f"Error parsing configuration: {str(e)}")

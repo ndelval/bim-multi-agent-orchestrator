@@ -74,7 +74,9 @@ class GraphPlanningSettings:
     max_nodes_per_graph: int = 20
 
     # Fallback behavior configuration
-    enable_auto_fallback: bool = True  # Auto-create sequential edges on validation errors
+    enable_auto_fallback: bool = (
+        True  # Auto-create sequential edges on validation errors
+    )
     preserve_tot_intent: bool = False  # If True, raise error instead of falling back
     strict_validation: bool = False  # If True, fail on any validation error
 
@@ -125,82 +127,44 @@ class GraphPlanningTask(Task):
     # --------------- Graph generation prompts ---------------
     def _base_graph_prompt(self, x: str, y: str = "") -> str:
         """Generate base prompt for graph planning."""
-        agent_lines = [
+        from orchestrator.prompts import get_prompt
+
+        agent_lines = "\n".join(
             f"- {agent.name}: {agent.role}. Objetivo: {agent.goal}"
             for agent in self.agent_catalog
-        ]
+        )
+        agent_names_str = ", ".join(agent.name for agent in self.agent_catalog)
+        current_plan = y.strip() if y.strip() else "<Sin especificacion de grafo>"
 
-        # Extract just the agent names for explicit listing
-        agent_names = [agent.name for agent in self.agent_catalog]
-        agent_names_str = ", ".join(agent_names)
-
-        current_plan = y.strip() if y.strip() else "<Sin especificación de grafo>"
-
-        return (
-            "Eres un arquitecto de workflows de agentes especializado en crear grafos StateGraph.\n"
-            "Tu objetivo es diseñar un grafo de ejecución estructurado que permita mayor control sobre el flujo.\n\n"
-            f"Problema a resolver: {x.strip()}\n\n"
-            "Agentes disponibles:\n"
-            f"{chr(10).join(agent_lines)}\n\n"
-            f"IMPORTANTE: Los nombres exactos de agentes disponibles son: {agent_names_str}\n"
-            "Cuando crees nodos de tipo 'agent', el campo 'agent' DEBE ser uno de estos nombres exactos.\n"
-            "Cuando crees parallel_groups, los nombres en 'parallel_nodes' deben corresponder a nombres de nodos válidos.\n\n"
-            f"Especificación actual del grafo:\n{current_plan}\n\n"
-            "Genera el siguiente componente del grafo en formato JSON COMPACTO (una sola línea).\n"
-            "Responde ÚNICAMENTE con JSON válido en UNA LÍNEA, sin saltos de línea ni explicaciones.\n\n"
-            "Formato esperado (TODO EN UNA LÍNEA):\n"
-            '{"component_type": "node|edge|parallel_group", "name": "nombre_unico", '
-            '"type": "agent|router|parallel|condition|start|end", "agent": "NOMBRE_AGENTE_EXACTO_DE_LA_LISTA", '
-            '"objective": "descripción_específica", "expected_output": "resultado_esperado", '
-            '"from_node": "nodo_origen_para_edges", "to_node": "nodo_destino_para_edges", '
-            '"edge_type": "direct|conditional|parallel", '
-            '"condition": {"type": "state_check", "field": "campo", "operator": "equals", "value": "valor"}, '
-            '"parallel_nodes": ["nombre_nodo_1", "nombre_nodo_2"]}\n\n'
-            "REGLAS CRÍTICAS:\n"
-            "1. Para nodos tipo 'agent': el campo 'agent' es OBLIGATORIO y debe ser exactamente uno de: "
-            f"{agent_names_str}\n"
-            "2. Para parallel_groups: primero crea los nodos individuales, luego el parallel_group que los referencia\n"
-            "3. El 'name' del nodo puede ser descriptivo pero el 'agent' debe ser el nombre exacto del agente\n\n"
-            "Ejemplos válidos:\n"
-            '{"component_type":"node","name":"research","type":"agent","agent":"Researcher",'
-            '"objective":"Gather market information","expected_output":"Research report"}\n'
-            '{"component_type":"node","name":"analysis","type":"agent","agent":"Analyst",'
-            '"objective":"Analyze data","expected_output":"Analysis report"}\n'
-            '{"component_type":"parallel_group","name":"parallel_research","parallel_nodes":["research","analysis"]}\n'
+        return get_prompt(
+            "planning.base_graph",
+            problem=x.strip(),
+            agent_lines=agent_lines,
+            agent_names_str=agent_names_str,
+            current_plan=current_plan,
         )
 
     def standard_prompt_wrap(self, x: str, y: str = "") -> str:
         return self._base_graph_prompt(x, y)
 
     def cot_prompt_wrap(self, x: str, y: str = "") -> str:
-        prompt = (
-            self._base_graph_prompt(x, y) + "\n\nPiensa paso a paso:\n"
-            "1. ¿Qué tipo de componente necesita el grafo ahora?\n"
-            "2. ¿Cómo se conecta con componentes existentes?\n"
-            "3. ¿Se puede ejecutar en paralelo con otros componentes?\n"
-            "4. ¿Necesita condiciones especiales para la ejecución?\n\n"
-            "Después de pensar, devuelve ÚNICAMENTE el JSON del componente."
-        )
-        return prompt
+        from orchestrator.prompts import get_prompt
+
+        base = self._base_graph_prompt(x, y)
+        return get_prompt("planning.cot_graph", base_prompt=base)
 
     def propose_prompt_wrap(self, x: str, y: str = "") -> str:
         return self._base_graph_prompt(x, y)
 
     def value_prompt_wrap(self, x: str, y: str) -> str:
         """Evaluate graph specification quality."""
-        plan = y.strip() if y.strip() else "<Sin especificación>"
+        from orchestrator.prompts import get_prompt
 
-        return (
-            "Evalúa la calidad de la siguiente especificación de grafo StateGraph.\n"
-            'Responde en JSON estricto: {"score": <0-10>, "reason": "..."}.\n\n'
-            f"Problema: {x.strip()}\n"
-            f"Especificación del grafo:\n{plan}\n\n"
-            "Criterios de evaluación:\n"
-            "- Cobertura del problema (¿resuelve todos los aspectos?)\n"
-            "- Estructura del grafo (¿es lógica y eficiente?)\n"
-            "- Uso apropiado de agentes (¿asignaciones correctas?)\n"
-            "- Oportunidades de paralelización (¿maximiza eficiencia?)\n"
-            "- Manejo de condiciones y routing (¿control de flujo adecuado?)\n"
+        plan = y.strip() if y.strip() else "<Sin especificacion>"
+        return get_prompt(
+            "planning.value_graph",
+            problem=x.strip(),
+            plan=plan,
         )
 
     def value_outputs_unwrap(self, x: str, y: str, value_outputs: List[str]) -> float:
@@ -209,7 +173,14 @@ class GraphPlanningTask(Task):
         for raw in value_outputs:
             try:
                 data = json.loads(raw)
-                score = float(data.get("score", 0))
+                # Pydantic validation for type safety (BP-STRUCT-04)
+                try:
+                    from orchestrator.schemas.outputs import ValueOutput
+
+                    validated = ValueOutput.model_validate(data)
+                    score = validated.score
+                except Exception:
+                    score = float(data.get("score", 0))
             except Exception:
                 # Fallback: extract numeric score
                 match = re.search(r"([0-9]+(?:\.[0-9]+)?)", raw)
@@ -219,11 +190,15 @@ class GraphPlanningTask(Task):
 
     def vote_prompt_wrap(self, x: str, ys: List[str]) -> str:
         """Select best graph specification from candidates."""
-        enumerated = "\n".join(f"Opción {i+1}:\n{y.strip()}" for i, y in enumerate(ys))
-        return (
-            "Selecciona la mejor especificación de grafo para resolver el problema.\n"
-            "Responde con el número de la opción más prometedora.\n\n"
-            f"Problema: {x.strip()}\n\n{enumerated}\n"
+        from orchestrator.prompts import get_prompt
+
+        choices = "\n".join(
+            f"Opción {i + 1}:\n{y.strip()}" for i, y in enumerate(ys)
+        )
+        return get_prompt(
+            "planning.vote_graph",
+            problem=x.strip(),
+            choices=choices,
         )
 
     def vote_outputs_unwrap(
@@ -487,7 +462,7 @@ def _build_graph_spec_from_plan(
     plan_text: str,
     agent_catalog: Sequence[AgentConfig],
     graph_name: str,
-    settings: Optional[GraphPlanningSettings] = None
+    settings: Optional[GraphPlanningSettings] = None,
 ) -> StateGraphSpec:
     """
     Build StateGraphSpec from ToT planning output with intelligent edge inference.
@@ -538,6 +513,15 @@ def _build_graph_spec_from_plan(
         if parsed_objects:
             logger.debug(f"Parsed {len(parsed_objects)} component(s) from line")
         for component in parsed_objects:
+            # Pydantic validation for type safety (BP-STRUCT-04)
+            try:
+                from orchestrator.schemas.outputs import PlannerComponentOutput
+
+                validated = PlannerComponentOutput.model_validate(component)
+                component = validated.model_dump(exclude_none=True)
+            except Exception:
+                logger.debug("Component validation skipped for: %s", component)
+
             comp_type = component.get("component_type", "")
 
             if comp_type == "node":
@@ -612,26 +596,28 @@ def _build_graph_spec_from_plan(
         except ValueError as e:
             error_msg = f"Edge {edge.from_node}→{edge.to_node} failed: {e}"
             logger.error(error_msg)
-            edge_errors.append({
-                'edge': f"{edge.from_node}→{edge.to_node}",
-                'error': str(e)
-            })
+            edge_errors.append(
+                {"edge": f"{edge.from_node}→{edge.to_node}", "error": str(e)}
+            )
 
     # Surface edge processing summary
     if edges_filtered > 0:
-        logger.info(f"Parallel conflict resolution: {edges_filtered} edge(s) filtered to preserve parallelization")
+        logger.info(
+            f"Parallel conflict resolution: {edges_filtered} edge(s) filtered to preserve parallelization"
+        )
     if edge_errors:
-        logger.warning(f"Edge validation: {edges_added} succeeded, {len(edge_errors)} failed, {edges_filtered} filtered")
+        logger.warning(
+            f"Edge validation: {edges_added} succeeded, {len(edge_errors)} failed, {edges_filtered} filtered"
+        )
         if edges_added == 0 and len(components["edges"]) > 0:
-            logger.error("CRITICAL: All edges failed validation - graph will be disconnected")
+            logger.error(
+                "CRITICAL: All edges failed validation - graph will be disconnected"
+            )
             for err in edge_errors:
                 logger.error(f"  - {err['edge']}: {err['error']}")
 
     for parallel_group in components["parallel_groups"]:
-        try:
-            graph_spec.add_parallel_group(parallel_group)
-        except ValueError as e:
-            logger.warning(f"Skipping invalid parallel group: {e}")
+        graph_spec.add_parallel_group(parallel_group)
 
     # Ensure graph has start and end nodes
     _ensure_start_end_nodes(graph_spec)
@@ -643,7 +629,9 @@ def _build_graph_spec_from_plan(
 
         # Check fallback configuration
         if settings.strict_validation:
-            raise ValueError(f"Graph validation failed with strict_validation enabled: {errors}")
+            raise ValueError(
+                f"Graph validation failed with strict_validation enabled: {errors}"
+            )
 
         if settings.preserve_tot_intent:
             raise ValueError(
@@ -653,14 +641,18 @@ def _build_graph_spec_from_plan(
 
         # Auto-fix some common issues (respects enable_auto_fallback)
         if settings.enable_auto_fallback:
-            logger.info("Auto-fallback enabled, attempting to fix graph validation errors")
+            logger.info(
+                "Auto-fallback enabled, attempting to fix graph validation errors"
+            )
             _auto_fix_graph(graph_spec)
 
             # ✅ RE-VALIDATE after auto-fix
             post_fix_errors = graph_spec.validate()
             if post_fix_errors:
                 logger.error(f"Auto-fix failed to resolve errors: {post_fix_errors}")
-                raise ValueError(f"Graph validation failed even after auto-fix: {post_fix_errors}")
+                raise ValueError(
+                    f"Graph validation failed even after auto-fix: {post_fix_errors}"
+                )
             else:
                 logger.info("✅ Auto-fix successfully resolved all validation errors")
         else:
@@ -696,11 +688,13 @@ def _parse_json_objects(text: str) -> List[Dict[str, Any]]:
             logger.warning(f"Failed to parse JSON at position {idx}: {e}")
             # ERROR RECOVERY: Skip to next JSON object and continue parsing
             # This prevents edge loss when earlier components have parse errors
-            next_obj_start = text.find('{', idx + 1)
+            next_obj_start = text.find("{", idx + 1)
             if next_obj_start == -1:
                 logger.warning("No more JSON objects found after parse error")
                 break
-            logger.info(f"Recovering: Skipping to next object at position {next_obj_start}")
+            logger.info(
+                f"Recovering: Skipping to next object at position {next_obj_start}"
+            )
             idx = next_obj_start
             continue
 
@@ -919,7 +913,9 @@ def _validate_parallel_group_references(graph_spec: StateGraphSpec) -> None:
         invalid_refs = []
         corrections_made = []
 
-        for node_ref in parallel_group.nodes[:]:  # Use slice to allow modification during iteration
+        for node_ref in parallel_group.nodes[
+            :
+        ]:  # Use slice to allow modification during iteration
             if node_ref not in node_names:
                 logger.error(
                     f"Parallel group '{parallel_group.group_id}' references "
@@ -929,7 +925,9 @@ def _validate_parallel_group_references(graph_spec: StateGraphSpec) -> None:
                 # Try to find closest match
                 closest = _find_closest_node_name(node_ref, node_names)
                 if closest:
-                    logger.warning(f"Did you mean '{closest}'? Auto-correcting reference.")
+                    logger.warning(
+                        f"Did you mean '{closest}'? Auto-correcting reference."
+                    )
                     # Update the reference
                     idx = parallel_group.nodes.index(node_ref)
                     parallel_group.nodes[idx] = closest
@@ -940,14 +938,20 @@ def _validate_parallel_group_references(graph_spec: StateGraphSpec) -> None:
 
         # Remove invalid references that couldn't be corrected
         for invalid_ref in invalid_refs:
-            logger.warning(f"Removing invalid reference '{invalid_ref}' from parallel group '{parallel_group.group_id}'")
+            logger.warning(
+                f"Removing invalid reference '{invalid_ref}' from parallel group '{parallel_group.group_id}'"
+            )
             parallel_group.nodes.remove(invalid_ref)
 
         # Log summary
         if corrections_made:
-            logger.info(f"Parallel group '{parallel_group.group_id}': Auto-corrected {len(corrections_made)} reference(s)")
+            logger.info(
+                f"Parallel group '{parallel_group.group_id}': Auto-corrected {len(corrections_made)} reference(s)"
+            )
         if invalid_refs:
-            logger.warning(f"Parallel group '{parallel_group.group_id}': Removed {len(invalid_refs)} invalid reference(s)")
+            logger.warning(
+                f"Parallel group '{parallel_group.group_id}': Removed {len(invalid_refs)} invalid reference(s)"
+            )
 
 
 def _find_closest_node_name(target: str, available_names: Set[str]) -> Optional[str]:
@@ -978,10 +982,12 @@ def _find_closest_node_name(target: str, available_names: Set[str]) -> Optional[
     suffixes = ["_task", "_node", "_agent", "task", "node", "agent"]
     for suffix in suffixes:
         if target_lower.endswith(suffix):
-            base = target_lower[:-len(suffix)].rstrip("_")
+            base = target_lower[: -len(suffix)].rstrip("_")
             for name in available_names:
                 if name.lower() == base or name.lower().startswith(base):
-                    logger.info(f"Matched '{target}' to '{name}' by removing suffix '{suffix}'")
+                    logger.info(
+                        f"Matched '{target}' to '{name}' by removing suffix '{suffix}'"
+                    )
                     return name
 
     # Strategy 3: Contains match (substring)
@@ -1003,7 +1009,9 @@ def _find_closest_node_name(target: str, available_names: Set[str]) -> Optional[
             best_match = name
 
     if best_match:
-        logger.info(f"Matched '{target}' to '{best_match}' with {best_score:.2f} character overlap")
+        logger.info(
+            f"Matched '{target}' to '{best_match}' with {best_score:.2f} character overlap"
+        )
         return best_match
 
     logger.warning(f"No close match found for '{target}' among {available_names}")
@@ -1069,16 +1077,22 @@ def _auto_fix_graph(graph_spec: StateGraphSpec) -> None:
     # Phase 4: Fallback sequential edges only if still broken
     validation_errors = graph_spec.validate()
     if validation_errors and not graph_spec.edges:
-        logger.warning(f"Phase 4: Edge inference failed (errors: {validation_errors}), falling back to sequential edges")
+        logger.warning(
+            f"Phase 4: Edge inference failed (errors: {validation_errors}), falling back to sequential edges"
+        )
         _auto_create_sequential_edges(graph_spec)
     elif validation_errors:
-        logger.warning(f"Phase 4: Validation errors persist after edge inference: {validation_errors}")
+        logger.warning(
+            f"Phase 4: Validation errors persist after edge inference: {validation_errors}"
+        )
 
     # Phase 5: Final validation confirmation
     final_errors = graph_spec.validate()
     if final_errors:
         logger.error(f"Auto-fix could not resolve all issues: {final_errors}")
-        logger.error(f"Graph state: {len(graph_spec.nodes)} nodes, {len(graph_spec.edges)} edges, {len(graph_spec.parallel_groups)} parallel groups")
+        logger.error(
+            f"Graph state: {len(graph_spec.nodes)} nodes, {len(graph_spec.edges)} edges, {len(graph_spec.parallel_groups)} parallel groups"
+        )
     else:
         logger.info("✅ Auto-fix successfully resolved all validation errors")
 
@@ -1124,9 +1138,13 @@ def _infer_edges_from_graph_structure(graph_spec: StateGraphSpec) -> None:
     for edge in all_inferred_edges:
         try:
             graph_spec.add_edge(edge)
-            logger.debug(f"Added inferred edge: {edge.from_node} → {edge.to_node} ({edge.type})")
+            logger.debug(
+                f"Added inferred edge: {edge.from_node} → {edge.to_node} ({edge.type})"
+            )
         except ValueError as e:
-            logger.warning(f"Could not add inferred edge {edge.from_node}→{edge.to_node}: {e}")
+            logger.warning(
+                f"Could not add inferred edge {edge.from_node}→{edge.to_node}: {e}"
+            )
 
     logger.info(f"Edge inference complete: {len(all_inferred_edges)} edges inferred")
 
@@ -1146,8 +1164,7 @@ def _infer_conditional_edges(graph_spec: StateGraphSpec) -> List[GraphEdgeSpec]:
 
     # Find condition/router nodes
     condition_nodes = [
-        n for n in node_list
-        if n.type in (NodeType.CONDITION, NodeType.ROUTER)
+        n for n in node_list if n.type in (NodeType.CONDITION, NodeType.ROUTER)
     ]
 
     if not condition_nodes:
@@ -1196,7 +1213,7 @@ def _infer_conditional_edges(graph_spec: StateGraphSpec) -> List[GraphEdgeSpec]:
                     field="branch_decision",
                     operator="equals",
                     value=f"branch_{branch_idx}",
-                    description=f"Route to {branch_node.name} on branch {branch_idx}"
+                    description=f"Route to {branch_node.name} on branch {branch_idx}",
                 )
 
                 edge = GraphEdgeSpec(
@@ -1205,7 +1222,7 @@ def _infer_conditional_edges(graph_spec: StateGraphSpec) -> List[GraphEdgeSpec]:
                     type=EdgeType.CONDITIONAL,
                     condition=condition,
                     label=f"Branch {branch_idx}: {branch_node.name}",
-                    description=f"Conditional routing to {branch_node.name}"
+                    description=f"Conditional routing to {branch_node.name}",
                 )
                 edges.append(edge)
 
@@ -1240,7 +1257,8 @@ def _infer_temporal_edges(graph_spec: StateGraphSpec) -> List[GraphEdgeSpec]:
 
     # Get executable nodes in order (exclude START/END and parallel group members)
     executable_nodes = [
-        n for n in node_list
+        n
+        for n in node_list
         if n.type not in (NodeType.START, NodeType.END)
         and n.name not in parallel_group_nodes
     ]
@@ -1262,7 +1280,7 @@ def _infer_temporal_edges(graph_spec: StateGraphSpec) -> List[GraphEdgeSpec]:
             to_node=first_node.name,
             type=EdgeType.DIRECT,
             label="Begin workflow",
-            description="Inferred temporal edge from start"
+            description="Inferred temporal edge from start",
         )
         edges.append(edge)
         nodes_with_outgoing.add(start_node_name)
@@ -1287,7 +1305,7 @@ def _infer_temporal_edges(graph_spec: StateGraphSpec) -> List[GraphEdgeSpec]:
             to_node=next_node.name,
             type=EdgeType.DIRECT,
             label=f"Step {i+1} → {i+2}",
-            description=f"Inferred temporal edge in sequence"
+            description=f"Inferred temporal edge in sequence",
         )
         edges.append(edge)
         nodes_with_outgoing.add(current_node.name)
@@ -1306,7 +1324,7 @@ def _infer_temporal_edges(graph_spec: StateGraphSpec) -> List[GraphEdgeSpec]:
                 to_node=end_node_name,
                 type=EdgeType.DIRECT,
                 label="Complete workflow",
-                description="Inferred temporal edge to end"
+                description="Inferred temporal edge to end",
             )
             edges.append(edge)
             nodes_with_outgoing.add(node.name)
@@ -1314,7 +1332,9 @@ def _infer_temporal_edges(graph_spec: StateGraphSpec) -> List[GraphEdgeSpec]:
     return edges
 
 
-def _infer_parallel_edges_from_groups(graph_spec: StateGraphSpec) -> List[GraphEdgeSpec]:
+def _infer_parallel_edges_from_groups(
+    graph_spec: StateGraphSpec,
+) -> List[GraphEdgeSpec]:
     """
     Infer fan-out/fan-in edges for parallel groups.
 
@@ -1338,7 +1358,9 @@ def _infer_parallel_edges_from_groups(graph_spec: StateGraphSpec) -> List[GraphE
         group_nodes = [n for n in parallel_group.nodes if n in node_names]
 
         if not group_nodes:
-            logger.warning(f"Parallel group '{parallel_group.group_id}' has no valid nodes")
+            logger.warning(
+                f"Parallel group '{parallel_group.group_id}' has no valid nodes"
+            )
             continue
 
         # Determine fan-out source (typically START, or previous sequential node)
@@ -1356,7 +1378,7 @@ def _infer_parallel_edges_from_groups(graph_spec: StateGraphSpec) -> List[GraphE
                     to_node=node_name,
                     type=EdgeType.PARALLEL,
                     label=f"Parallel: {node_name}",
-                    description=f"Inferred fan-out for parallel group {parallel_group.group_id}"
+                    description=f"Inferred fan-out for parallel group {parallel_group.group_id}",
                 )
                 edges.append(edge)
                 existing_edges.add(edge_key)
@@ -1370,7 +1392,7 @@ def _infer_parallel_edges_from_groups(graph_spec: StateGraphSpec) -> List[GraphE
                     to_node=fan_in_target,
                     type=EdgeType.AGGREGATION,
                     label=f"Aggregate: {node_name}",
-                    description=f"Inferred fan-in for parallel group {parallel_group.group_id}"
+                    description=f"Inferred fan-in for parallel group {parallel_group.group_id}",
                 )
                 edges.append(edge)
                 existing_edges.add(edge_key)
@@ -1407,7 +1429,7 @@ def _auto_create_sequential_edges(graph_spec: StateGraphSpec) -> None:
         from_node="start",
         to_node=agent_nodes[0].name,
         type=EdgeType.DIRECT,
-        label="Begin workflow"
+        label="Begin workflow",
     )
     try:
         graph_spec.add_edge(first_edge)
@@ -1419,13 +1441,15 @@ def _auto_create_sequential_edges(graph_spec: StateGraphSpec) -> None:
     for i in range(len(agent_nodes) - 1):
         edge = GraphEdgeSpec(
             from_node=agent_nodes[i].name,
-            to_node=agent_nodes[i+1].name,
+            to_node=agent_nodes[i + 1].name,
             type=EdgeType.DIRECT,
-            label=f"Step {i+1} to {i+2}"
+            label=f"Step {i+1} to {i+2}",
         )
         try:
             graph_spec.add_edge(edge)
-            logger.debug(f"Added edge: {agent_nodes[i].name} -> {agent_nodes[i+1].name}")
+            logger.debug(
+                f"Added edge: {agent_nodes[i].name} -> {agent_nodes[i+1].name}"
+            )
         except ValueError as e:
             logger.warning(f"Could not add sequential edge: {e}")
 
@@ -1434,7 +1458,7 @@ def _auto_create_sequential_edges(graph_spec: StateGraphSpec) -> None:
         from_node=agent_nodes[-1].name,
         to_node="end",
         type=EdgeType.DIRECT,
-        label="Complete workflow"
+        label="Complete workflow",
     )
     try:
         graph_spec.add_edge(last_edge)

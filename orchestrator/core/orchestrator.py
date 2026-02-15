@@ -8,7 +8,6 @@ import sys
 import os
 from typing import Dict, List, Optional, Any, Callable, Union, Sequence
 from pathlib import Path
-from textwrap import dedent
 
 # LangGraph integration - required
 from ..integrations.langchain_integration import (
@@ -28,7 +27,9 @@ from .exceptions import (
     AgentCreationError,
     TaskExecutionError,
     WorkflowError,
+    BudgetExceededError,
 )
+from .token_tracker import TokenTracker, CostConfig as TrackerCostConfig
 from ..factories.agent_factory import AgentFactory
 from ..factories.task_factory import TaskFactory
 from ..memory.memory_manager import MemoryManager
@@ -63,6 +64,7 @@ class Orchestrator:
         # LangGraph components (new system)
         self.graph_factory: Optional[GraphFactory] = None
         self.compiled_graph: Optional[Any] = None  # Compiled StateGraph
+        self.token_tracker: Optional[TokenTracker] = None
 
         # State
         self.agents: Dict[str, Agent] = {}
@@ -120,7 +122,23 @@ class Orchestrator:
 
     def _initialize_graph_factory(self) -> None:
         """Initialize graph factory for StateGraph creation."""
-        self.graph_factory = GraphFactory(self.agent_factory)
+        # Create TokenTracker from cost config
+        if self.config.cost and self.config.cost.enabled:
+            tracker_config = TrackerCostConfig(
+                max_tokens_per_task=self.config.cost.max_tokens_per_task,
+                max_cost_per_run=self.config.cost.max_cost_per_run,
+                alert_threshold_pct=self.config.cost.alert_threshold_pct,
+                enabled=True,
+            )
+            self.token_tracker = TokenTracker(tracker_config)
+            logger.info("TokenTracker initialized with budget enforcement")
+        else:
+            self.token_tracker = TokenTracker()
+            logger.info("TokenTracker initialized (tracking only, no limits)")
+
+        self.graph_factory = GraphFactory(
+            self.agent_factory, token_tracker=self.token_tracker
+        )
 
     def _create_dynamic_tools(self) -> Dict[str, Any]:
         """
@@ -321,6 +339,22 @@ class Orchestrator:
             logger.info("Executing LangGraph StateGraph workflow")
             result = await asyncio.to_thread(self.compiled_graph.invoke, initial_state)
 
+            # Log token usage summary
+            if self.token_tracker:
+                summary = self.token_tracker.get_run_summary()
+                logger.info(
+                    "Token usage summary: %d total tokens, $%.6f estimated cost",
+                    summary.get("total_tokens", 0),
+                    summary.get("total_cost", 0.0),
+                )
+                for agent_summary in summary.get("agents", []):
+                    logger.info(
+                        "  Agent '%s': %d tokens ($%.6f)",
+                        agent_summary["agent_name"],
+                        agent_summary["total_tokens"],
+                        agent_summary["total_cost"],
+                    )
+
             # Extract final output from state
             if hasattr(result, "final_output") and result.final_output:
                 return result.final_output
@@ -333,6 +367,12 @@ class Orchestrator:
             # Fallback - return the entire state
             return str(result)
 
+        except BudgetExceededError as e:
+            logger.warning(f"Budget exceeded: {e}")
+            if self.token_tracker:
+                summary = self.token_tracker.get_run_summary()
+                logger.info("Partial token summary before budget exceeded: %s", summary)
+            raise WorkflowError(f"Budget exceeded: {str(e)}") from e
         except Exception as e:
             logger.error(f"LangGraph workflow execution failed: {str(e)}")
             raise WorkflowError(f"LangGraph execution failed: {str(e)}")
@@ -580,6 +620,12 @@ class Orchestrator:
         self.reset()
         logger.info("Orchestrator cleanup completed")
 
+    def get_token_summary(self) -> Optional[Dict[str, Any]]:
+        """Get token usage summary for the current/last workflow run."""
+        if self.token_tracker:
+            return self.token_tracker.get_run_summary()
+        return None
+
     # Class methods for quick creation
     @classmethod
     def from_file(cls, file_path: Union[str, Path]) -> "Orchestrator":
@@ -774,7 +820,9 @@ class Orchestrator:
                 f"  - {snippet}" for snippet in recall_snippets if snippet
             )
             if formatted:
-                recall_block = f"\nRecalled context:\n{formatted}"
+                recall_block = (
+                    f"\n<context>\nRecalled context:\n{formatted}\n</context>"
+                )
 
         hint_block = f"\nSuggested task type: {task_hint}" if task_hint else ""
         objective_block = (
@@ -789,17 +837,12 @@ class Orchestrator:
                 tags_block = f"\nTags: {tag_str}"
 
         return (
-            dedent(
-                f"""
-                Agent role: {agent_cfg.role}
-                Base goal: {agent_cfg.goal}{hint_block}{objective_block}{tags_block}
-
-                Current prompt:
-                {prompt}
-                """
-            ).strip()
-            + recall_block
-            + "\n\nFollow your base instructions and deliver a concrete, actionable result."
+            f"<role>{agent_cfg.role}</role>\n"
+            f"<goal>{agent_cfg.goal}</goal>"
+            f"{hint_block}{objective_block}{tags_block}\n\n"
+            f"<context>\n{prompt}\n</context>"
+            f"{recall_block}"
+            "\n\nFollow your base instructions and deliver a concrete, actionable result."
         )
 
     @staticmethod

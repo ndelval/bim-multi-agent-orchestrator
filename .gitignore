@@ -1,70 +1,68 @@
-# Python
+# ── Python ──────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
-*.pyc
-*.env
-.env/
+*.egg-info/
+build/
+dist/
+
+# ── Virtual environments ───────────────────────────────
 .venv/
 venv/
 ENV/
+.env/
+
+# ── Environment / secrets ─────────────────────────────
+*.env
 *.envrc
-.claude/
-.praison/
-.pytest_cache
+.env.local
+.env.*.local
 
-
-# Jupyter Notebooks
-.ipynb_checkpoints/
-
-# VSCode
+# ── IDE / editor ───────────────────────────────────────
 .vscode/
+.idea/
+*.swp
+*.bak
+*.tmp
+*~
 
-# macOS
+# ── macOS ──────────────────────────────────────────────
 .DS_Store
 
-# Logs
-*.log
+# ── Caches ─────────────────────────────────────────────
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
 
-# Test outputs
+# ── Test / coverage outputs ────────────────────────────
 htmlcov/
 .coverage
 .tox/
 
-# Poetry
-poetry.lock
-
-# Node
+# ── Node ───────────────────────────────────────────────
 node_modules/
 
-# Otros
-*.swp
-*.bak
-*.tmp
-
-# Docker
+# ── Docker ─────────────────────────────────────────────
 *.pid
 *.pid.lock
 
-# Configuración
-*.toml
+# ── Logs ───────────────────────────────────────────────
+*.log
 
-# Archivos de entorno
-.env.local
-.env.*.local
-.env
-
-# Archivos de backup
-*~
-
-# Archivos de ejecución
-*.run
-
-# Archivos de compilación
-build/
-dist/
-*.egg-info/
-
-# Archivos de documentación
+# ── Build artifacts ────────────────────────────────────
 *.md.bak
+
+# ── Project-specific ignores ───────────────────────────
+CLAUDE.md
+apuntes.md
+AnexoB*
+best_practice/
+tests/
+
+# Tool / agent config directories
+.claude/
+.praison/
+.serena/
+.orchestrator/

@@ -22,13 +22,15 @@ class TestPromptWrapperFixes:
                 name="Researcher",
                 role="Research Specialist",
                 goal="Gather comprehensive information",
-                backstory="Expert at finding and synthesizing information"
+                backstory="Expert at finding and synthesizing information",
+                instructions="Research thoroughly",
             ),
             AgentConfig(
                 name="Analyst",
                 role="Data Analyst",
                 goal="Analyze patterns and insights",
-                backstory="Skilled at identifying trends and anomalies"
+                backstory="Skilled at identifying trends and anomalies",
+                instructions="Analyze carefully",
             ),
         ]
 
@@ -39,7 +41,7 @@ class TestPromptWrapperFixes:
             problem_statement="Test problem",
             agent_catalog=agent_catalog,
             max_steps=3,
-            prompt_style="standard"
+            prompt_style="standard",
         )
 
     @pytest.fixture
@@ -49,7 +51,7 @@ class TestPromptWrapperFixes:
             problem_statement="Test problem",
             agent_catalog=agent_catalog,
             max_steps=3,
-            prompt_style="cot"
+            prompt_style="cot",
         )
 
     def test_standard_prompt_wrap_exists(self, planning_task_standard):
@@ -65,8 +67,7 @@ class TestPromptWrapperFixes:
     def test_standard_prompt_wrap_returns_string(self, planning_task_standard):
         """Test standard_prompt_wrap returns valid string prompt."""
         prompt = planning_task_standard.standard_prompt_wrap(
-            x="Analyze system architecture",
-            y=""
+            x="Analyze system architecture", y=""
         )
 
         assert isinstance(prompt, str)
@@ -76,8 +77,7 @@ class TestPromptWrapperFixes:
     def test_cot_prompt_wrap_returns_string(self, planning_task_cot):
         """Test cot_prompt_wrap returns valid string prompt with CoT guidance."""
         prompt = planning_task_cot.cot_prompt_wrap(
-            x="Design microservices architecture",
-            y=""
+            x="Design microservices architecture", y=""
         )
 
         assert isinstance(prompt, str)
@@ -95,10 +95,7 @@ class TestPromptWrapperFixes:
 
     def test_standard_prompt_includes_agents(self, planning_task_standard):
         """Test standard prompt includes agent information."""
-        prompt = planning_task_standard.standard_prompt_wrap(
-            x="Test problem",
-            y=""
-        )
+        prompt = planning_task_standard.standard_prompt_wrap(x="Test problem", y="")
 
         # Should list available agents
         assert "Researcher" in prompt
@@ -106,10 +103,7 @@ class TestPromptWrapperFixes:
 
     def test_cot_prompt_includes_cot_guidance(self, planning_task_cot):
         """Test CoT prompt includes chain-of-thought guidance."""
-        prompt = planning_task_cot.cot_prompt_wrap(
-            x="Optimize database queries",
-            y=""
-        )
+        prompt = planning_task_cot.cot_prompt_wrap(x="Optimize database queries", y="")
 
         # Should include thinking guidance in Spanish
         assert "paso a paso" in prompt.lower() or "piensa" in prompt.lower()
@@ -118,8 +112,7 @@ class TestPromptWrapperFixes:
         """Test prompt generation with partial plan context."""
         partial_plan = "Agent: Researcher | Objective: Gather requirements"
         prompt = planning_task_standard.standard_prompt_wrap(
-            x="Build feature",
-            y=partial_plan
+            x="Build feature", y=partial_plan
         )
 
         assert isinstance(prompt, str)
@@ -131,7 +124,9 @@ class TestPromptWrapperFixes:
             prompt = planning_task_standard.standard_prompt_wrap(x="Test", y="")
             assert isinstance(prompt, str)
         except NotImplementedError as e:
-            pytest.fail(f"standard_prompt_wrap should not raise NotImplementedError: {e}")
+            pytest.fail(
+                f"standard_prompt_wrap should not raise NotImplementedError: {e}"
+            )
 
     def test_no_notimplementederror_on_cot(self, planning_task_cot):
         """Test cot_prompt_wrap does not raise NotImplementedError."""
@@ -148,7 +143,7 @@ class TestPromptWrapperFixes:
             problem_statement="Test",
             agent_catalog=agent_catalog,
             max_steps=2,
-            prompt_style="cot"
+            prompt_style="cot",
         )
 
         # Verify methods are accessible
@@ -161,7 +156,7 @@ class TestPromptWrapperFixes:
             problem_statement="Test",
             agent_catalog=agent_catalog,
             max_steps=2,
-            prompt_style="standard"
+            prompt_style="standard",
         )
 
         assert task.prompt_style == "standard"
@@ -176,7 +171,7 @@ class TestPromptWrapperFixes:
             problem_statement="Test",
             agent_catalog=agent_catalog,
             max_steps=2,
-            prompt_style="cot"
+            prompt_style="cot",
         )
 
         assert task.prompt_style == "cot"
@@ -187,7 +182,7 @@ class TestPromptWrapperFixes:
             problem_statement="Test",
             agent_catalog=agent_catalog,
             max_steps=2,
-            prompt_style="invalid_style"
+            prompt_style="invalid_style",
         )
 
         # Should fallback to 'cot'
@@ -215,10 +210,7 @@ class TestPromptWrapperFixes:
 
     def test_base_prompt_helper(self, planning_task_standard):
         """Test _base_prompt helper method."""
-        base_prompt = planning_task_standard._base_prompt(
-            x="Build API",
-            y=""
-        )
+        base_prompt = planning_task_standard._base_prompt(x="Build API", y="")
 
         assert isinstance(base_prompt, str)
         assert "Build API" in base_prompt
@@ -227,8 +219,7 @@ class TestPromptWrapperFixes:
     def test_wrap_prompt_helper(self, planning_task_standard):
         """Test _wrap_prompt helper method."""
         wrapped = planning_task_standard._wrap_prompt(
-            x="Test problem",
-            y="partial plan"
+            x="Test problem", y="partial plan"
         )
 
         assert isinstance(wrapped, str)
@@ -246,7 +237,8 @@ class TestPromptWrapperIntegration:
                 name="Planner",
                 role="Strategic Planner",
                 goal="Create comprehensive plans",
-                backstory="Expert at breaking down complex problems"
+                backstory="Expert at breaking down complex problems",
+                instructions="Plan strategically",
             ),
         ]
 
@@ -256,7 +248,7 @@ class TestPromptWrapperIntegration:
             problem_statement="Test",
             agent_catalog=agent_catalog,
             max_steps=2,
-            prompt_style="standard"
+            prompt_style="standard",
         )
 
         prompt = task.propose_prompt_wrap(x="Propose test", y="")
@@ -270,14 +262,14 @@ class TestPromptWrapperIntegration:
             problem_statement="Problem 1",
             agent_catalog=agent_catalog,
             max_steps=2,
-            prompt_style="standard"
+            prompt_style="standard",
         )
 
         task2 = OrchestratorPlanningTask(
             problem_statement="Problem 2",
             agent_catalog=agent_catalog,
             max_steps=3,
-            prompt_style="cot"
+            prompt_style="cot",
         )
 
         prompt1 = task1.standard_prompt_wrap(x="Test1", y="")

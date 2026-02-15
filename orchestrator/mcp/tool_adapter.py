@@ -43,9 +43,7 @@ class MCPToolAdapter:
         logger.debug("MCPToolAdapter initialized")
 
     async def create_tools(
-        self,
-        config: MCPServerConfig,
-        filter_tools: Optional[List[str]] = None
+        self, config: MCPServerConfig, filter_tools: Optional[List[str]] = None
     ) -> List[Callable]:
         """
         Create agent-compatible tools from an MCP server.
@@ -77,8 +75,7 @@ class MCPToolAdapter:
             # Filter tools if configured
             if tool_filter:
                 available_tools = [
-                    tool for tool in available_tools
-                    if tool["name"] in tool_filter
+                    tool for tool in available_tools if tool["name"] in tool_filter
                 ]
 
             if not available_tools:
@@ -96,19 +93,43 @@ class MCPToolAdapter:
             # Cache result
             self._tool_cache[cache_key] = tools
 
-            logger.info(
-                f"Created {len(tools)} tool(s) from MCP server '{config.name}'"
-            )
+            logger.info(f"Created {len(tools)} tool(s) from MCP server '{config.name}'")
             return tools
 
         except Exception as e:
             logger.error(f"Failed to create tools from '{config.name}': {e}")
             raise RuntimeError(f"Failed to create MCP tools from '{config.name}': {e}")
 
+    def _enrich_description(
+        self, description: str, input_schema: Dict[str, Any]
+    ) -> str:
+        """Append parameter documentation from MCP input_schema to description."""
+        properties = input_schema.get("properties", {})
+        if not properties:
+            return description
+
+        required = set(input_schema.get("required", []))
+        lines = [description, "", "Parameters:"]
+        for name, prop in properties.items():
+            ptype = prop.get("type", "any")
+            req = "required" if name in required else "optional"
+            desc = prop.get("description", "")
+            constraints: List[str] = []
+            if "enum" in prop:
+                constraints.append(f"one of {prop['enum']}")
+            if "minimum" in prop:
+                constraints.append(f"min={prop['minimum']}")
+            if "maximum" in prop:
+                constraints.append(f"max={prop['maximum']}")
+            if "minLength" in prop:
+                constraints.append(f"minLength={prop['minLength']}")
+            suffix = f" ({', '.join(constraints)})" if constraints else ""
+            lines.append(f"- {name} ({ptype}, {req}): {desc}{suffix}")
+
+        return "\n".join(lines)
+
     def _create_tool_function(
-        self,
-        config: MCPServerConfig,
-        tool_def: Dict[str, Any]
+        self, config: MCPServerConfig, tool_def: Dict[str, Any]
     ) -> Callable:
         """
         Create a callable Python function wrapping an MCP tool.
@@ -123,8 +144,11 @@ class MCPToolAdapter:
             Async callable function that invokes the MCP tool
         """
         tool_name = tool_def["name"]
-        tool_description = tool_def.get("description", f"MCP tool: {tool_name}")
         input_schema = tool_def.get("input_schema", {})
+        tool_description = self._enrich_description(
+            tool_def.get("description", f"MCP tool: {tool_name}"),
+            input_schema,
+        )
 
         # Create async wrapper (primary version)
         async def mcp_tool_async(**kwargs) -> str:
@@ -137,15 +161,15 @@ class MCPToolAdapter:
 
                 # Call the MCP tool
                 result = await self.client_manager.call_tool(
-                    config=config,
-                    tool_name=tool_name,
-                    arguments=kwargs
+                    config=config, tool_name=tool_name, arguments=kwargs
                 )
 
                 # Format result
                 formatted_result = self._format_tool_result(result)
 
-                logger.debug(f"MCP tool '{tool_name}' returned: {formatted_result[:200]}")
+                logger.debug(
+                    f"MCP tool '{tool_name}' returned: {formatted_result[:200]}"
+                )
                 return formatted_result
 
             except Exception as e:
@@ -162,7 +186,9 @@ class MCPToolAdapter:
         mcp_tool_async.is_mcp_tool = True
         mcp_tool_async.is_async = True
 
-        logger.debug(f"Created async tool function for '{tool_name}' from '{config.name}'")
+        logger.debug(
+            f"Created async tool function for '{tool_name}' from '{config.name}'"
+        )
 
         # Return async version as primary
         return mcp_tool_async
@@ -179,7 +205,7 @@ class MCPToolAdapter:
         """
         try:
             # Handle different result types from MCP
-            if hasattr(result, 'content'):
+            if hasattr(result, "content"):
                 # Result has content attribute (common MCP response)
                 content = result.content
 
@@ -187,18 +213,18 @@ class MCPToolAdapter:
                     # Multiple content items
                     parts = []
                     for item in content:
-                        if hasattr(item, 'text'):
+                        if hasattr(item, "text"):
                             parts.append(item.text)
-                        elif hasattr(item, 'data'):
+                        elif hasattr(item, "data"):
                             parts.append(str(item.data))
                         else:
                             parts.append(str(item))
                     return "\n".join(parts)
 
-                elif hasattr(content, 'text'):
+                elif hasattr(content, "text"):
                     return content.text
 
-                elif hasattr(content, 'data'):
+                elif hasattr(content, "data"):
                     return str(content.data)
 
                 else:

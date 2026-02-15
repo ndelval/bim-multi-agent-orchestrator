@@ -71,9 +71,9 @@ class RouteDecision:
     """Result of route classification."""
 
     route: str
-    confidence: float
-    reason: str
-    source: str  # "keyword", "llm_json", "llm_fallback", "default"
+    confidence: Optional[float] = None
+    reason: str = ""
+    source: str = ""  # "keyword", "llm_json", "llm_fallback", "default"
 
 
 class RouteClassifier:
@@ -295,6 +295,10 @@ class RouteClassifier:
         """
         Validate parsed JSON dictionary and create RouteDecision.
 
+        Uses Pydantic RouterOutput for type coercion and constraint
+        enforcement (BP-STRUCT-04).  Falls back gracefully if validation
+        fails.
+
         Args:
             parsed: Parsed JSON dictionary
             source: Source identifier for logging
@@ -309,18 +313,27 @@ class RouteClassifier:
         if not route:
             return None
 
-        route = str(route).strip().lower()
-        if route not in self.allowed_routes:
+        # Pydantic validation for type coercion & constraints (BP-STRUCT-04)
+        try:
+            from orchestrator.schemas.outputs import RouterOutput
+
+            validated = RouterOutput.model_validate(parsed)
+        except Exception:
+            logger.debug("[RouteClassifier] Pydantic validation failed for %s", parsed)
+            return None
+
+        if validated.route not in self.allowed_routes:
             logger.warning(
-                "[RouteClassifier] Invalid route '%s' not in allowed routes", route
+                "[RouteClassifier] Invalid route '%s' not in allowed routes",
+                validated.route,
             )
             return None
 
-        logger.info("[RouteClassifier] Successfully parsed route: %s", route)
+        logger.info("[RouteClassifier] Successfully parsed route: %s", validated.route)
         return RouteDecision(
-            route=route,
-            confidence=float(parsed.get("confidence", 0.9)),
-            reason=str(parsed.get("reasoning", "LLM JSON decision")),
+            route=validated.route,
+            confidence=validated.confidence,
+            reason=validated.reasoning or "LLM JSON decision",
             source=source,
         )
 

@@ -494,20 +494,18 @@ class TestEdgeCasesAndErrors:
         logger.info("Invalid parameter handling successful")
 
     def test_tool_with_very_large_top_k(self, mock_memory_manager):
-        """Test tool behavior with unreasonably large top_k."""
+        """Test that unreasonably large top_k is rejected by validation."""
+        from pydantic import ValidationError
+
         tool = mock_memory_manager.create_graph_tool(
             default_user_id="test_user", default_run_id="test_run"
         )
 
-        # Test with large top_k
-        result = tool.invoke({"query": "test", "top_k": 10000})
+        # top_k > 50 should be rejected by GraphRAGInput validation (BP-AGENT-10)
+        with pytest.raises(ValidationError, match="less than or equal to 50"):
+            tool.invoke({"query": "test", "top_k": 10000})
 
-        # Should be passed through (provider may have its own limits)
-        mock_memory_manager.retrieve_with_graph.assert_called()
-        call_kwargs = mock_memory_manager.retrieve_with_graph.call_args[1]
-        assert call_kwargs["limit"] == 10000
-
-        logger.info("Large top_k handling successful")
+        logger.info("Large top_k validation successful")
 
     def test_concurrent_tool_execution(self, mock_memory_manager):
         """Test concurrent execution of tool from multiple agents."""

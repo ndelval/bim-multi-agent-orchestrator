@@ -21,42 +21,46 @@ logger = logging.getLogger(__name__)
 
 class NodeType(str, Enum):
     """Types of nodes in a StateGraph specification."""
-    AGENT = "agent"           # Standard agent execution node
-    ROUTER = "router"         # Routing/decision node
-    PARALLEL = "parallel"     # Parallel execution coordinator
-    AGGREGATOR = "aggregator" # Results aggregation node
-    CONDITION = "condition"   # Conditional logic node
-    START = "start"          # Entry point marker
-    END = "end"              # Exit point marker
+
+    AGENT = "agent"  # Standard agent execution node
+    ROUTER = "router"  # Routing/decision node
+    PARALLEL = "parallel"  # Parallel execution coordinator
+    AGGREGATOR = "aggregator"  # Results aggregation node
+    CONDITION = "condition"  # Conditional logic node
+    START = "start"  # Entry point marker
+    END = "end"  # Exit point marker
 
 
 class EdgeType(str, Enum):
     """Types of edges in a StateGraph specification."""
-    DIRECT = "direct"           # Unconditional transition
-    CONDITIONAL = "conditional" # Conditional based on state
-    PARALLEL = "parallel"       # Parallel execution branch
-    AGGREGATION = "aggregation" # Aggregation collection
-    FALLBACK = "fallback"      # Error/fallback path
+
+    DIRECT = "direct"  # Unconditional transition
+    CONDITIONAL = "conditional"  # Conditional based on state
+    PARALLEL = "parallel"  # Parallel execution branch
+    AGGREGATION = "aggregation"  # Aggregation collection
+    FALLBACK = "fallback"  # Error/fallback path
 
 
 class RoutingStrategy(str, Enum):
     """Routing strategies for decision nodes."""
-    RULE_BASED = "rule_based"     # Rule-based routing
-    LLM_BASED = "llm_based"      # LLM-based routing
-    STATE_BASED = "state_based"   # State-driven routing
-    HYBRID = "hybrid"            # Combination approach
+
+    RULE_BASED = "rule_based"  # Rule-based routing
+    LLM_BASED = "llm_based"  # LLM-based routing
+    STATE_BASED = "state_based"  # State-driven routing
+    HYBRID = "hybrid"  # Combination approach
 
 
 @dataclass
 class GraphCondition:
     """Represents a condition for graph routing or node execution."""
+
     type: Literal["state_check", "output_check", "custom"] = "state_check"
-    field: Optional[str] = None          # State field to check
-    operator: str = "equals"             # Comparison operator
-    value: Any = None                    # Value to compare against
-    expression: Optional[str] = None     # Custom expression
-    description: str = ""                # Human-readable description
-    
+    field: Optional[str] = None  # State field to check
+    operator: str = "equals"  # Comparison operator
+    value: Any = None  # Value to compare against
+    expression: Optional[str] = None  # Custom expression
+    description: str = ""  # Human-readable description
+
     def evaluate(self, state: Any) -> bool:
         """Evaluate condition against state (placeholder implementation)."""
         # This would be implemented based on the actual state structure
@@ -66,35 +70,35 @@ class GraphCondition:
 @dataclass
 class GraphNodeSpec:
     """Specification for a single node in a StateGraph."""
-    
+
     # Core identification
-    name: str                           # Unique node identifier
-    type: NodeType = NodeType.AGENT     # Type of node
-    
+    name: str  # Unique node identifier
+    type: NodeType = NodeType.AGENT  # Type of node
+
     # Agent assignment (for AGENT type nodes)
-    agent: Optional[str] = None         # Agent name to execute
-    objective: str = ""                 # Specific objective for this node
-    expected_output: str = ""           # Expected output description
-    
+    agent: Optional[str] = None  # Agent name to execute
+    objective: str = ""  # Specific objective for this node
+    expected_output: str = ""  # Expected output description
+
     # Execution configuration
-    timeout: Optional[float] = None     # Execution timeout in seconds
-    retries: int = 0                   # Number of retries on failure
-    parallel_group: Optional[str] = None # Parallel execution group ID
-    
+    timeout: Optional[float] = None  # Execution timeout in seconds
+    retries: int = 0  # Number of retries on failure
+    parallel_group: Optional[str] = None  # Parallel execution group ID
+
     # Routing and conditions
     routing_strategy: RoutingStrategy = RoutingStrategy.RULE_BASED
     entry_conditions: List[GraphCondition] = field(default_factory=list)
     exit_conditions: List[GraphCondition] = field(default_factory=list)
-    
+
     # Metadata and configuration
     metadata: Dict[str, Any] = field(default_factory=dict)
     tools: List[str] = field(default_factory=list)
     context_requirements: List[str] = field(default_factory=list)
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary representation."""
         return asdict(self)
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> GraphNodeSpec:
         """Create from dictionary representation."""
@@ -103,7 +107,7 @@ class GraphNodeSpec:
             data["type"] = NodeType(data["type"])
         if "routing_strategy" in data and isinstance(data["routing_strategy"], str):
             data["routing_strategy"] = RoutingStrategy(data["routing_strategy"])
-        
+
         # Handle condition objects
         if "entry_conditions" in data:
             data["entry_conditions"] = [
@@ -115,57 +119,57 @@ class GraphNodeSpec:
                 GraphCondition(**cond) if isinstance(cond, dict) else cond
                 for cond in data["exit_conditions"]
             ]
-        
+
         return cls(**data)
 
 
 @dataclass
 class GraphEdgeSpec:
     """Specification for an edge (transition) in a StateGraph."""
-    
+
     # Core connection
-    from_node: str                      # Source node name
-    to_node: str                       # Destination node name
-    type: EdgeType = EdgeType.DIRECT   # Type of edge
-    
+    from_node: str  # Source node name
+    to_node: str  # Destination node name
+    type: EdgeType = EdgeType.DIRECT  # Type of edge
+
     # Conditional logic
     condition: Optional[GraphCondition] = None  # Condition for traversal
-    priority: int = 0                   # Priority for conditional routing
-    
+    priority: int = 0  # Priority for conditional routing
+
     # Metadata
-    label: str = ""                    # Human-readable label
-    description: str = ""              # Edge description
+    label: str = ""  # Human-readable label
+    description: str = ""  # Edge description
     metadata: Dict[str, Any] = field(default_factory=dict)
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary representation."""
         return asdict(self)
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> GraphEdgeSpec:
         """Create from dictionary representation."""
         # Handle enum conversion
         if "type" in data and isinstance(data["type"], str):
             data["type"] = EdgeType(data["type"])
-        
+
         # Handle condition object
         if "condition" in data and isinstance(data["condition"], dict):
             data["condition"] = GraphCondition(**data["condition"])
-        
+
         return cls(**data)
 
 
 @dataclass
 class ParallelGroup:
     """Specification for a group of nodes that execute in parallel."""
-    
-    group_id: str                      # Unique group identifier
-    nodes: List[str]                   # Nodes in this parallel group
+
+    group_id: str  # Unique group identifier
+    nodes: List[str]  # Nodes in this parallel group
     aggregation_strategy: str = "collect_all"  # How to combine results
-    timeout: Optional[float] = None    # Group execution timeout
+    timeout: Optional[float] = None  # Group execution timeout
     required_success_count: Optional[int] = None  # Min successful nodes
-    description: str = ""              # Group description
-    
+    description: str = ""  # Group description
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary representation."""
         return asdict(self)
@@ -174,44 +178,46 @@ class ParallelGroup:
 @dataclass
 class StateGraphSpec:
     """Complete specification for a StateGraph that can be compiled and executed."""
-    
+
     # Core graph structure
-    name: str                          # Graph identifier
-    description: str = ""              # Graph description
+    name: str  # Graph identifier
+    description: str = ""  # Graph description
     nodes: List[GraphNodeSpec] = field(default_factory=list)
     edges: List[GraphEdgeSpec] = field(default_factory=list)
-    
+
     # Execution flow
-    entry_point: str = "start"         # Initial node
+    entry_point: str = "start"  # Initial node
     exit_points: List[str] = field(default_factory=lambda: ["end"])
-    
+
     # Parallel execution groups
     parallel_groups: List[ParallelGroup] = field(default_factory=list)
-    
+
     # Global configuration
     max_iterations: int = MAX_GRAPH_ITERATIONS  # Maximum execution iterations
     global_timeout: Optional[float] = None  # Overall execution timeout
-    error_handling: str = "stop"      # Error handling strategy
-    
+    error_handling: str = "stop"  # Error handling strategy
+
     # Routing and state management
     routing_logic: Dict[str, Any] = field(default_factory=dict)
     initial_state: Dict[str, Any] = field(default_factory=dict)
-    
+
     # Metadata
-    version: str = "1.0"              # Specification version
-    created_by: str = "tot_planner"   # Creation source
+    version: str = "1.0"  # Specification version
+    created_by: str = "tot_planner"  # Creation source
     tags: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
-    
+
     def add_node(self, node: GraphNodeSpec) -> None:
         """Add a node to the graph specification."""
         # Check for duplicate names
         if any(n.name == node.name for n in self.nodes):
             raise ValueError(f"Node with name '{node.name}' already exists")
-        
+
         self.nodes.append(node)
-        logger.debug(f"Added node '{node.name}' of type '{node.type}' to graph '{self.name}'")
-    
+        logger.debug(
+            f"Added node '{node.name}' of type '{node.type}' to graph '{self.name}'"
+        )
+
     def add_edge(self, edge: GraphEdgeSpec) -> None:
         """Add an edge to the graph specification."""
         # Validate that referenced nodes exist
@@ -220,78 +226,89 @@ class StateGraphSpec:
             raise ValueError(f"Source node '{edge.from_node}' does not exist")
         if edge.to_node not in node_names:
             raise ValueError(f"Destination node '{edge.to_node}' does not exist")
-        
+
         self.edges.append(edge)
-        logger.debug(f"Added edge from '{edge.from_node}' to '{edge.to_node}' in graph '{self.name}'")
-    
+        logger.debug(
+            f"Added edge from '{edge.from_node}' to '{edge.to_node}' in graph '{self.name}'"
+        )
+
     def add_parallel_group(self, group: ParallelGroup) -> None:
-        """Add a parallel execution group."""
-        # Validate that all nodes in group exist
-        node_names = {n.name for n in self.nodes}
-        for node_name in group.nodes:
-            if node_name not in node_names:
-                raise ValueError(f"Node '{node_name}' in parallel group does not exist")
-        
+        """Add a parallel execution group.
+
+        Node existence is not checked here to allow the auto-correction
+        pipeline (_validate_parallel_group_references) to fix bad references
+        before validation. Use validate() to check for invalid references.
+        """
         self.parallel_groups.append(group)
-        logger.debug(f"Added parallel group '{group.group_id}' with {len(group.nodes)} nodes")
-    
+        logger.debug(
+            f"Added parallel group '{group.group_id}' with {len(group.nodes)} nodes"
+        )
+
     def validate(self) -> List[str]:
         """Validate the graph specification and return any errors."""
         errors = []
-        
+
         # Check for required entry point
         node_names = {n.name for n in self.nodes}
         if self.entry_point not in node_names:
             errors.append(f"Entry point '{self.entry_point}' does not exist in nodes")
-        
+
         # Check exit points
         for exit_point in self.exit_points:
             if exit_point not in node_names:
                 errors.append(f"Exit point '{exit_point}' does not exist in nodes")
-        
+
         # Check for cycles (basic check)
         # This is a simplified cycle detection - could be enhanced
         visited = set()
         rec_stack = set()
-        
+
         def has_cycle(node: str) -> bool:
             if node in rec_stack:
                 return True
             if node in visited:
                 return False
-            
+
             visited.add(node)
             rec_stack.add(node)
-            
+
             # Find outgoing edges
             for edge in self.edges:
                 if edge.from_node == node:
                     if has_cycle(edge.to_node):
                         return True
-            
+
             rec_stack.remove(node)
             return False
-        
+
         if has_cycle(self.entry_point):
             errors.append("Graph contains cycles")
-        
+
         # Check for unreachable nodes
         reachable = set()
         to_visit = [self.entry_point]
-        
+
         while to_visit:
             current = to_visit.pop()
             if current in reachable:
                 continue
             reachable.add(current)
-            
+
             for edge in self.edges:
                 if edge.from_node == current and edge.to_node not in reachable:
                     to_visit.append(edge.to_node)
-        
+
         unreachable = node_names - reachable
         if unreachable:
             errors.append(f"Unreachable nodes: {', '.join(unreachable)}")
+
+        # Check parallel group node references exist
+        for pg in self.parallel_groups:
+            for node_name in pg.nodes:
+                if node_name not in node_names:
+                    errors.append(
+                        f"Parallel group '{pg.group_id}' references non-existent node '{node_name}'"
+                    )
 
         # Check for parallel group vs edge conflicts
         for parallel_group in self.parallel_groups:
@@ -316,7 +333,7 @@ class StateGraphSpec:
                 )
 
         return errors
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary representation."""
         return {
@@ -335,13 +352,13 @@ class StateGraphSpec:
             "version": self.version,
             "created_by": self.created_by,
             "tags": self.tags,
-            "metadata": self.metadata
+            "metadata": self.metadata,
         }
-    
+
     def to_json(self, indent: int = 2) -> str:
         """Export to JSON string."""
         return json.dumps(self.to_dict(), indent=indent, ensure_ascii=False)
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> StateGraphSpec:
         """Create from dictionary representation."""
@@ -349,26 +366,38 @@ class StateGraphSpec:
         nodes = []
         if "nodes" in data:
             nodes = [
-                GraphNodeSpec.from_dict(node_data) if isinstance(node_data, dict) else node_data
+                (
+                    GraphNodeSpec.from_dict(node_data)
+                    if isinstance(node_data, dict)
+                    else node_data
+                )
                 for node_data in data["nodes"]
             ]
-        
+
         # Convert edges
         edges = []
         if "edges" in data:
             edges = [
-                GraphEdgeSpec.from_dict(edge_data) if isinstance(edge_data, dict) else edge_data
+                (
+                    GraphEdgeSpec.from_dict(edge_data)
+                    if isinstance(edge_data, dict)
+                    else edge_data
+                )
                 for edge_data in data["edges"]
             ]
-        
+
         # Convert parallel groups
         parallel_groups = []
         if "parallel_groups" in data:
             parallel_groups = [
-                ParallelGroup(**group_data) if isinstance(group_data, dict) else group_data
+                (
+                    ParallelGroup(**group_data)
+                    if isinstance(group_data, dict)
+                    else group_data
+                )
                 for group_data in data["parallel_groups"]
             ]
-        
+
         # Create instance with converted data
         return cls(
             name=data.get("name", ""),
@@ -386,9 +415,9 @@ class StateGraphSpec:
             version=data.get("version", "1.0"),
             created_by=data.get("created_by", "tot_planner"),
             tags=data.get("tags", []),
-            metadata=data.get("metadata", {})
+            metadata=data.get("metadata", {}),
         )
-    
+
     @classmethod
     def from_json(cls, json_str: str) -> StateGraphSpec:
         """Create from JSON string."""
@@ -397,18 +426,17 @@ class StateGraphSpec:
 
 
 def create_simple_sequential_graph(
-    name: str,
-    agent_assignments: List[Dict[str, str]]
+    name: str, agent_assignments: List[Dict[str, str]]
 ) -> StateGraphSpec:
     """
     Create a simple sequential StateGraph from agent assignments.
-    
+
     This provides backward compatibility with existing assignment-based planning.
-    
+
     Args:
         name: Graph name
         agent_assignments: List of {"agent": "name", "objective": "...", "expected_output": "..."}
-        
+
     Returns:
         StateGraphSpec for sequential execution
     """
@@ -416,76 +444,81 @@ def create_simple_sequential_graph(
         name=name,
         description=f"Sequential execution graph with {len(agent_assignments)} steps",
         entry_point="start",
-        exit_points=["end"]
+        exit_points=["end"],
     )
-    
+
     # Add start node
-    graph.add_node(GraphNodeSpec(
-        name="start",
-        type=NodeType.START,
-        objective="Initialize workflow",
-        expected_output="Ready to begin execution"
-    ))
-    
+    graph.add_node(
+        GraphNodeSpec(
+            name="start",
+            type=NodeType.START,
+            objective="Initialize workflow",
+            expected_output="Ready to begin execution",
+        )
+    )
+
     # Add agent nodes
     previous_node = "start"
     for i, assignment in enumerate(agent_assignments):
         node_name = f"step_{i+1}_{assignment['agent'].lower().replace(' ', '_')}"
-        
+
         node = GraphNodeSpec(
             name=node_name,
             type=NodeType.AGENT,
-            agent=assignment['agent'],
-            objective=assignment.get('objective', ''),
-            expected_output=assignment.get('expected_output', ''),
-            tools=assignment.get('tools', []),
-            metadata={
-                "step_number": i + 1,
-                "original_assignment": assignment
-            }
+            agent=assignment["agent"],
+            objective=assignment.get("objective", ""),
+            expected_output=assignment.get("expected_output", ""),
+            tools=assignment.get("tools", []),
+            metadata={"step_number": i + 1, "original_assignment": assignment},
         )
-        
+
         graph.add_node(node)
-        
+
         # Add edge from previous node
-        graph.add_edge(GraphEdgeSpec(
-            from_node=previous_node,
-            to_node=node_name,
-            type=EdgeType.DIRECT,
-            label=f"Proceed to step {i+1}"
-        ))
-        
+        graph.add_edge(
+            GraphEdgeSpec(
+                from_node=previous_node,
+                to_node=node_name,
+                type=EdgeType.DIRECT,
+                label=f"Proceed to step {i+1}",
+            )
+        )
+
         previous_node = node_name
-    
+
     # Add end node
-    graph.add_node(GraphNodeSpec(
-        name="end",
-        type=NodeType.END,
-        objective="Complete workflow",
-        expected_output="Final results"
-    ))
-    
+    graph.add_node(
+        GraphNodeSpec(
+            name="end",
+            type=NodeType.END,
+            objective="Complete workflow",
+            expected_output="Final results",
+        )
+    )
+
     # Add final edge
     if previous_node != "start":  # Only if we have agent nodes
-        graph.add_edge(GraphEdgeSpec(
-            from_node=previous_node,
-            to_node="end",
-            type=EdgeType.DIRECT,
-            label="Complete workflow"
-        ))
-    
+        graph.add_edge(
+            GraphEdgeSpec(
+                from_node=previous_node,
+                to_node="end",
+                type=EdgeType.DIRECT,
+                label="Complete workflow",
+            )
+        )
+
     return graph
 
 
 # Export main classes and functions
 __all__ = [
     "StateGraphSpec",
-    "GraphNodeSpec", 
+    "GraphNodeSpec",
     "GraphEdgeSpec",
     "ParallelGroup",
     "GraphCondition",
     "NodeType",
-    "EdgeType", 
+    "EdgeType",
     "RoutingStrategy",
-    "create_simple_sequential_graph"
+    "create_simple_sequential_graph",
 ]

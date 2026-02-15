@@ -182,3 +182,41 @@ class GraphCreationError(OrchestratorError):
 
     def is_retryable(self) -> bool:
         return False  # Graph structure errors need correction
+
+
+class BudgetExceededError(OrchestratorError):
+    """Raised when token or cost budget is exceeded.
+
+    Attributes:
+        agent_name: Name of the agent that triggered the budget limit
+        current_usage: Current usage value (tokens or cost)
+        budget_limit: The configured limit that was exceeded
+        budget_type: Type of budget exceeded ("tokens" or "cost")
+    """
+
+    def __init__(
+        self,
+        message: str,
+        agent_name: str = "",
+        current_usage: float = 0.0,
+        budget_limit: float = 0.0,
+        budget_type: str = "tokens",
+        recovery_hint: Optional[str] = None,
+        category: Optional[str] = None,
+    ):
+        self.agent_name = agent_name
+        self.current_usage = current_usage
+        self.budget_limit = budget_limit
+        self.budget_type = budget_type
+        super().__init__(
+            message,
+            recovery_hint=recovery_hint
+            or f"Increase {budget_type} budget or reduce task complexity",
+            category=category or "budget",
+        )
+
+    def _default_recovery_hint(self) -> str:
+        return f"Increase {self.budget_type} budget or reduce task complexity"
+
+    def is_retryable(self) -> bool:
+        return False  # Budget exceeded requires configuration change
